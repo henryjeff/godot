@@ -1311,6 +1311,21 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 				}
 			}
 		} break;
+		case RS::INSTANCE_FLAG_STATIC_SHADOW_CASTER: {
+			if ((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK && instance->base_data) {
+				InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
+				geom->can_cast_static_shadows = p_enabled;
+			}
+
+			if (instance->scenario && instance->array_index >= 0) {
+				InstanceData &idata = instance->scenario->instance_data[instance->array_index];
+				if (p_enabled) {
+					idata.flags |= InstanceData::FLAG_STATIC_SHADOW_CASTER;
+				} else {
+					idata.flags &= ~InstanceData::FLAG_STATIC_SHADOW_CASTER;
+				}
+			}
+		} break;
 		default: {
 		}
 	}
