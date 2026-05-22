@@ -861,7 +861,13 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 
 	for (int i = 0; i < sorted_active_viewports.size(); i++) {
 		// TODO Somehow print the index
+#if defined(GODOT_USE_TRACY)
+		// Per-viewport attribution: tag with RID + size + draw-call breakdown so
+		// `bynode "render viewport"` decomposes the multi-viewport render cost.
+		ZoneNamedN(__vp_zone, "render viewport", true);
+#else
 		GodotProfileZone("render viewport");
+#endif
 
 		Viewport *vp = sorted_active_viewports[i];
 
@@ -966,6 +972,22 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 		objects_drawn += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_CANVAS][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME];
 		vertices_drawn += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_CANVAS][RSE::VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME];
 		draw_calls_used += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_CANVAS][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME];
+
+#if defined(GODOT_USE_TRACY)
+		// Attribute this viewport's cost: rid + WxH + update_mode + draw calls split
+		// into scene (vis) / shadow (sh) / 2D (cv). render_info is fresh post-_draw_viewport.
+		{
+			String __s = "rid=";
+			__s += itos(vp->self.get_id());
+			__s += String(" ") + itos(vp->size.x) + "x" + itos(vp->size.y);
+			__s += String(" u") + itos((int)vp->update_mode);
+			__s += String(" vis=") + itos(vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME]);
+			__s += String(" sh=") + itos(vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME]);
+			__s += String(" cv=") + itos(vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_CANVAS][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME]);
+			const CharString __c = __s.utf8();
+			ZoneTextV(__vp_zone, __c.get_data(), __c.length());
+		}
+#endif
 	}
 
 	RSG::scene->set_debug_draw_mode(RSE::VIEWPORT_DEBUG_DRAW_DISABLED);

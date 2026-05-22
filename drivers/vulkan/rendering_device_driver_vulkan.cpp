@@ -46,6 +46,55 @@
 #include <thirdparty/swappy-frame-pacing/swappyVk.h>
 #endif
 
+// GPU profiling: defines GODOT_USE_TRACY + TRACY_ENABLE when built with profiler=tracy.
+#include "core/profiling/profiling.h"
+
+#ifdef GODOT_USE_TRACY
+// Symbol-table mode is mandatory here: this is a volk build (use_volk defaults on, so
+// vulkan-1 is NOT linked). Tracy must load its own Vulkan entry points via the proc-addr
+// functions rather than calling global vk* symbols, which would be unresolved.
+#define TRACY_VK_USE_SYMBOL_TABLE
+#include <tracy/TracyVulkan.hpp>
+
+#include <new>
+
+namespace {
+// Single GPU context for the device. Rendering is single-threaded in this build and
+// _begin_frame/_end_frame are strictly paired on the main thread, so one zone-storage
+// slot is sufficient (no overlap between frames).
+tracy::VkCtx *_tracy_gpu_ctx = nullptr;
+
+// GPU zones are keyed by the frame's VkCommandBuffer, NOT a single global slot. Godot's
+// _begin_frame/_end_frame interleave (the editor's progress dialog pumps swap_buffers ->
+// _end_frame re-entrantly during the first filesystem scan; _flush_and_stall calls
+// _end_frame()/_begin_frame() out of band), but each frame's command buffer is begun and
+// ended as a balanced pair — a frame index cannot be re-begun until its prior submission's
+// fence signals (_stall_for_frame). Keying per buffer guarantees:
+//   1. Every Tracy GPU zone is balanced (a begin always gets its end). A single global slot
+//      instead abandoned the open zone on each re-entrant begin, emitting begin-without-end
+//      events that Tracy nests without bound — which stack-overflows the offline trace loader.
+//   2. The end timestamp is only ever written into the buffer the zone was opened on, which
+//      is still in the recording state at _end_frame (before command_buffer_end()).
+struct TracyGpuZoneSlot {
+	VkCommandBuffer cmdbuf = VK_NULL_HANDLE;
+	bool active = false;
+	alignas(tracy::VkCtxScope) char storage[sizeof(tracy::VkCtxScope)];
+};
+constexpr int TRACY_GPU_ZONE_SLOTS = 8; // frame_count is 2-3; ample headroom for interleaving.
+TracyGpuZoneSlot _tracy_gpu_zone_slots[TRACY_GPU_ZONE_SLOTS];
+constexpr tracy::SourceLocationData _tracy_gpu_frame_srcloc{ "GPU Frame", "gpu_profiler_frame", __FILE__, (uint32_t)__LINE__, 0 };
+
+TracyGpuZoneSlot *_tracy_gpu_slot_for(VkCommandBuffer p_cb) {
+	for (int i = 0; i < TRACY_GPU_ZONE_SLOTS; i++) {
+		if (_tracy_gpu_zone_slots[i].cmdbuf == p_cb) {
+			return &_tracy_gpu_zone_slots[i];
+		}
+	}
+	return nullptr;
+}
+} // namespace
+#endif
+
 #define ARRAY_SIZE(a) std_size(a)
 
 // Disable raytracing support on macOS and iOS due to MoltenVK limitations.
@@ -3508,6 +3557,97 @@ void RenderingDeviceDriverVulkan::command_buffer_execute_secondary(CommandBuffer
 	}
 
 	vkCmdExecuteCommands(command_buffer->vk_command_buffer, p_secondary_cmd_buffers.size(), secondary_command_buffers.ptr());
+}
+
+// ----- GPU PROFILING (Tracy) -----
+
+void RenderingDeviceDriverVulkan::gpu_profiler_frame_begin(CommandBufferID p_cmd_buffer) {
+#ifdef GODOT_USE_TRACY
+	if (_tracy_gpu_ctx == nullptr) {
+		// Lazily create the GPU context the first time we have a live device + queue.
+		// Find a graphics-capable queue family with at least one instantiated queue.
+		uint32_t gfx_family = UINT32_MAX;
+		for (uint32_t i = 0; i < queue_families.size(); i++) {
+			if (queue_families[i].is_empty() || queue_families[i][0].queue == VK_NULL_HANDLE) {
+				continue;
+			}
+			if (queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+				gfx_family = i;
+				break;
+			}
+		}
+		if (gfx_family == UINT32_MAX) {
+			return;
+		}
+		VkQueue gfx_queue = queue_families[gfx_family][0].queue;
+
+		// Tracy's context constructor records + submits + waits on a one-time command
+		// buffer for calibration, then never touches it again, so a transient pool we
+		// destroy immediately afterward is sufficient.
+		VkCommandPoolCreateInfo pool_info = {};
+		pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+		pool_info.queueFamilyIndex = gfx_family;
+		VkCommandPool init_pool = VK_NULL_HANDLE;
+		if (vkCreateCommandPool(vk_device, &pool_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_COMMAND_POOL), &init_pool) != VK_SUCCESS) {
+			return;
+		}
+
+		VkCommandBufferAllocateInfo cb_alloc = {};
+		cb_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		cb_alloc.commandPool = init_pool;
+		cb_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		cb_alloc.commandBufferCount = 1;
+		VkCommandBuffer init_cmd = VK_NULL_HANDLE;
+		if (vkAllocateCommandBuffers(vk_device, &cb_alloc, &init_cmd) == VK_SUCCESS) {
+			_tracy_gpu_ctx = TracyVkContext(context_driver->instance_get(), physical_device, vk_device, gfx_queue, init_cmd, vkGetInstanceProcAddr, vkGetDeviceProcAddr);
+			if (_tracy_gpu_ctx != nullptr) {
+				TracyVkContextName(_tracy_gpu_ctx, "Godot Vulkan", 12);
+			}
+		}
+		vkDestroyCommandPool(vk_device, init_pool, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_COMMAND_POOL));
+
+		if (_tracy_gpu_ctx == nullptr) {
+			return;
+		}
+	}
+
+	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)(p_cmd_buffer.id);
+	VkCommandBuffer cb = command_buffer->vk_command_buffer;
+	TracyGpuZoneSlot *slot = _tracy_gpu_slot_for(cb);
+	if (slot == nullptr) {
+		slot = _tracy_gpu_slot_for(VK_NULL_HANDLE); // claim a free slot for this buffer
+		if (slot == nullptr) {
+			return; // table full (would need > TRACY_GPU_ZONE_SLOTS buffers in flight); skip.
+		}
+		slot->cmdbuf = cb;
+	}
+	// Degenerate: a prior zone on this same buffer was never closed. Abandon it without
+	// running ~VkCtxScope (the buffer may have been reset), forfeiting one query-ring slot.
+	// Per-buffer keying makes this vanishingly rare (a buffer is not re-begun before its end).
+	slot->active = false;
+	new (slot->storage) tracy::VkCtxScope(_tracy_gpu_ctx, &_tracy_gpu_frame_srcloc, cb, true);
+	slot->active = true;
+#endif
+}
+
+void RenderingDeviceDriverVulkan::gpu_profiler_frame_end(CommandBufferID p_cmd_buffer) {
+#ifdef GODOT_USE_TRACY
+	if (_tracy_gpu_ctx == nullptr) {
+		return;
+	}
+	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)(p_cmd_buffer.id);
+	VkCommandBuffer cb = command_buffer->vk_command_buffer;
+	TracyGpuZoneSlot *slot = _tracy_gpu_slot_for(cb);
+	if (slot != nullptr && slot->active) {
+		// Close the zone on the buffer it was opened on (still recording here, before
+		// command_buffer_end()), then collect. Recorded outside any render pass since the
+		// caller invokes this after draw_graph.end().
+		reinterpret_cast<tracy::VkCtxScope *>(slot->storage)->~VkCtxScope();
+		slot->active = false;
+		TracyVkCollect(_tracy_gpu_ctx, cb);
+	}
+#endif
 }
 
 /********************/
@@ -7480,6 +7620,14 @@ RenderingDeviceDriverVulkan::RenderingDeviceDriverVulkan(RenderingContextDriverV
 }
 
 RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
+#ifdef GODOT_USE_TRACY
+	if (_tracy_gpu_ctx != nullptr) {
+		// vk_device is still valid here (destroyed at the end of this destructor).
+		TracyVkDestroy(_tracy_gpu_ctx);
+		_tracy_gpu_ctx = nullptr;
+	}
+#endif
+
 #if defined(DEBUG_ENABLED) || defined(DEV_ENABLED)
 	if (breadcrumb_buffer != BufferID()) {
 		buffer_free(breadcrumb_buffer);
