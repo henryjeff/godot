@@ -1325,6 +1325,13 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 			if ((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK && instance->base_data) {
 				InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 				geom->can_cast_static_shadows = p_enabled;
+				// The static caster set changed for every paired light, so invalidate their cached
+				// static depth — else promoting a settled item to static (or back) at runtime leaves
+				// a stale cached depth -> phantom shadows.
+				for (Instance *E : geom->lights) {
+					InstanceLightData *light = static_cast<InstanceLightData *>(E->base_data);
+					light->make_static_shadow_dirty();
+				}
 			}
 
 			if (instance->scenario && instance->array_index >= 0) {
@@ -4597,6 +4604,9 @@ RendererSceneCull::RendererSceneCull() {
 	// every frame so they auto-fall-back to per-frame rendering. Per-light Light3D.shadow_caching_mode
 	// is the follow-up once this is visually verified.
 	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_shadows", false);
+	// Debug isolate view for the cached-spot static/dynamic split: 0 = full (cached static +
+	// dynamic overlay), 1 = static casters only, 2 = dynamic casters only. Toggle to see the split.
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_shadows_debug", 0);
 }
 
 RendererSceneCull::~RendererSceneCull() {
