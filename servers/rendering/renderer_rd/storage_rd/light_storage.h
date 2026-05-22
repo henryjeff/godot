@@ -411,6 +411,14 @@ private:
 				uint64_t fog_version = 0; // used for fog
 				uint64_t alloc_tick = 0;
 
+				// Approach-A cached spot shadows: per-slot cached STATIC-caster depth.
+				// Re-rendered only when cached_static_version != the light's static_version,
+				// then texture_copy'd into the atlas slot with dynamic casters drawn on top.
+				// null/UINT64_MAX = unallocated/never-rendered. Freed on slot invalidate/resize.
+				RID static_depth;
+				RID static_fb;
+				uint64_t cached_static_version = UINT64_MAX;
+
 				Shadow() {}
 			};
 

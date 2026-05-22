@@ -2757,7 +2757,9 @@ RD::DataFormat LightStorage::get_shadow_atlas_depth_format(bool p_16_bits) {
 }
 
 uint32_t LightStorage::get_shadow_atlas_depth_usage_bits() {
-	return RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	// CAN_COPY_TO: approach-A cached spot shadows texture_copy the per-light cached static
+	// depth into the atlas slot each frame (cache_static_spot path in renderer_scene_cull).
+	return RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 }
 
 /* DIRECTIONAL SHADOW */
