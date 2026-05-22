@@ -2579,6 +2579,11 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 			instance_shadow_cull_result.clear();
 
+			// P3 approach B (experimental, default off): a cached spot renders ONLY static casters,
+			// so dynamic casters (player/NPCs) are excluded from the cull below. Moving spots never
+			// cache (static_version bumps every frame), so this only affects truly-stationary spots.
+			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows");
+
 			Vector<Vector3> points = Geometry3D::compute_convex_mesh_points(&planes[0], planes.size());
 
 			struct CullConvex {
@@ -2603,7 +2608,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 				Instance *instance = instance_shadow_cull_result[j];
-				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
+				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || (cache_static_spot && !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_static_shadows) || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
 					continue;
 				} else {
 					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -3632,7 +3637,25 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// so that we can turn off tighter caster culling.
 			light->detect_light_intersects_multiple_cameras(Engine::get_singleton()->get_frames_drawn());
 
-			if (light->is_shadow_dirty()) {
+			// P3 approach B: a cached stationary spot re-renders ONLY when its static caster set
+			// changed (static_version). Dynamic casters bump the legacy shadow_dirty_count (ignored
+			// here) but not static_version, so the player walking under it no longer forces a
+			// re-render. A moving spot bumps static_version every frame -> always redraws -> auto
+			// fallback to legacy per-frame behavior.
+			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && RSG::light_storage->light_get_type(ins->base) == RS::LIGHT_SPOT;
+
+			if (cache_static_spot) {
+				if (light->static_version != light->last_rendered_static_version) {
+					if (light_culler->prepare_regular_light(*ins)) {
+						light->last_version++;
+						light->last_rendered_static_version = light->static_version;
+						// Cached shadows are reused across camera angles, so the render must contain
+						// the FULL (camera-independent) static caster set, not the camera-tight cull
+						// that the legacy per-frame path uses. is_shadow_update_full() == (count==0).
+						light->clear_shadow_dirty();
+					}
+				}
+			} else if (light->is_shadow_dirty()) {
 				// Dirty shadows have no need to be drawn if
 				// the light volume doesn't intersect the camera frustum.
 
@@ -4555,6 +4578,14 @@ RendererSceneCull::RendererSceneCull() {
 	bool tighter_caster_culling = GLOBAL_DEF("rendering/lights_and_shadows/tighter_shadow_caster_culling", true);
 	light_culler->set_caster_culling_active(tighter_caster_culling);
 	light_culler->set_light_culling_active(tighter_caster_culling);
+
+	// P3 (approach B, EXPERIMENTAL, default off): cache stationary SPOT light shadows by rendering
+	// only static casters (GeometryInstance3D.static_shadow_caster) and re-rendering only when the
+	// static set changes (InstanceLightData.static_version). Dynamic casters (player/NPCs) no longer
+	// force a re-render, but also cast no shadow from cached spots. Moving spots bump static_version
+	// every frame so they auto-fall-back to per-frame rendering. Per-light Light3D.shadow_caching_mode
+	// is the follow-up once this is visually verified.
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_shadows", false);
 }
 
 RendererSceneCull::~RendererSceneCull() {
