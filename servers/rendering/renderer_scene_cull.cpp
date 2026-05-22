@@ -2608,7 +2608,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 				Instance *instance = instance_shadow_cull_result[j];
-				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || (cache_static_spot && !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_static_shadows) || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
+				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
 					continue;
 				} else {
 					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -2619,7 +2619,16 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 						RSG::mesh_storage->mesh_instance_check_for_update(instance->mesh_instance);
 					}
 				}
-				shadow_data.instances.push_back(static_cast<InstanceGeometryData *>(instance->base_data)->geometry_instance);
+				// Approach A: a cached spot caches STATIC casters (instances) and overlays DYNAMIC
+				// casters per-frame (dynamic_instances). Non-cached lights put everything in instances.
+				// Step 2a populates dynamic_instances; the overlay render consuming it is step 2b
+				// (until then the renderer ignores dynamic_instances, i.e. behaves as approach B).
+				InstanceGeometryData *spot_geom = static_cast<InstanceGeometryData *>(instance->base_data);
+				if (cache_static_spot && !spot_geom->can_cast_static_shadows) {
+					shadow_data.dynamic_instances.push_back(spot_geom->geometry_instance);
+				} else {
+					shadow_data.instances.push_back(spot_geom->geometry_instance);
+				}
 			}
 
 			RSG::mesh_storage->update_mesh_instances();
@@ -3762,6 +3771,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	for (uint32_t i = 0; i < max_shadows_used; i++) {
 		render_shadow_data[i].instances.clear();
+		render_shadow_data[i].dynamic_instances.clear();
 	}
 	max_shadows_used = 0;
 
@@ -4555,6 +4565,7 @@ RendererSceneCull::RendererSceneCull() {
 
 	for (uint32_t i = 0; i < MAX_UPDATE_SHADOWS; i++) {
 		render_shadow_data[i].instances.set_page_pool(&geometry_instance_cull_page_pool);
+		render_shadow_data[i].dynamic_instances.set_page_pool(&geometry_instance_cull_page_pool);
 	}
 	for (uint32_t i = 0; i < SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE; i++) {
 		render_sdfgi_data[i].instances.set_page_pool(&geometry_instance_cull_page_pool);
@@ -4594,6 +4605,7 @@ RendererSceneCull::~RendererSceneCull() {
 
 	for (uint32_t i = 0; i < MAX_UPDATE_SHADOWS; i++) {
 		render_shadow_data[i].instances.reset();
+		render_shadow_data[i].dynamic_instances.reset();
 	}
 	for (uint32_t i = 0; i < SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE; i++) {
 		render_sdfgi_data[i].instances.reset();
