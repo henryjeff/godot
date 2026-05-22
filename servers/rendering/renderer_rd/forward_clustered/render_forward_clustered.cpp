@@ -2738,6 +2738,14 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 		}
 
 	} else if (p_cache_static_spot) {
+		const int cache_debug = GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_shadows_debug");
+		if (cache_debug == 1 || cache_debug == 2) {
+			// DEBUG isolate view: static-only (1) or dynamic-only (2) -> render just that caster set
+			// into the slot (clear, no cache/overlay) so toggling reveals which shadows are which.
+			const PagedArray<RenderGeometryInstance *> &dbg = (cache_debug == 2 && p_dynamic_instances) ? *p_dynamic_instances : p_instances;
+			_render_shadow_append(render_fb, dbg, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, true, p_open_pass, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
+			return;
+		}
 		// Approach A overlay: render the static set into the per-slot cached depth (only when its
 		// static_version changed), then draw the dynamic casters into the atlas slot with depth LOAD
 		// (reverse-Z GREATER from the existing depth pass). The cached depth is texture_copy'd into
