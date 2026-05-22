@@ -6692,6 +6692,11 @@ void RenderingDevice::_begin_frame(bool p_presented) {
 	GodotProfileZoneGrouped(_profile_zone, "driver->command_buffer_begin");
 	driver->command_buffer_begin(frames[frame].command_buffer);
 
+#ifdef GODOT_USE_TRACY
+	// Open the per-frame GPU zone on the frame's primary command buffer (just begun).
+	driver->gpu_profiler_frame_begin(frames[frame].command_buffer);
+#endif
+
 	// Reset the graph.
 	GodotProfileZoneGrouped(_profile_zone, "draw_graph.begin");
 	draw_graph.begin();
@@ -6741,6 +6746,14 @@ void RenderingDevice::_end_frame() {
 
 	GodotProfileZoneGrouped(_profile_zone, "draw_graph.end");
 	draw_graph.end(RENDER_GRAPH_REORDER, RENDER_GRAPH_FULL_BARRIERS, command_buffer, frames[frame].command_buffer_pool);
+
+#ifdef GODOT_USE_TRACY
+	// Close the per-frame GPU zone and collect timestamp results. Recorded after
+	// draw_graph.end() so we're outside any render pass (required by vkCmdResetQueryPool),
+	// and before command_buffer_end() so the buffer is still recording.
+	driver->gpu_profiler_frame_end(command_buffer);
+#endif
+
 	GodotProfileZoneGrouped(_profile_zone, "driver->command_buffer_end");
 	driver->command_buffer_end(command_buffer);
 	GodotProfileZoneGrouped(_profile_zone, "driver->end_segment");

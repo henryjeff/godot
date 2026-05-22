@@ -383,6 +383,10 @@ public:
 	virtual void command_buffer_end(CommandBufferID p_cmd_buffer) override final;
 	virtual void command_buffer_execute_secondary(CommandBufferID p_cmd_buffer, VectorView<CommandBufferID> p_secondary_cmd_buffers) override final;
 
+	// ----- GPU PROFILING (Tracy) -----
+	virtual void gpu_profiler_frame_begin(CommandBufferID p_cmd_buffer) override final;
+	virtual void gpu_profiler_frame_end(CommandBufferID p_cmd_buffer) override final;
+
 	/********************/
 	/**** SWAP CHAIN ****/
 	/********************/

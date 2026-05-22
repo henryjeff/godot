@@ -441,6 +441,17 @@ public:
 	virtual void command_buffer_end(CommandBufferID p_cmd_buffer) = 0;
 	virtual void command_buffer_execute_secondary(CommandBufferID p_cmd_buffer, VectorView<CommandBufferID> p_secondary_cmd_buffers) = 0;
 
+	/***********************/
+	/**** GPU PROFILING ****/
+	/***********************/
+
+	// Optional GPU-profiler hooks. Backends that support a GPU profiler (e.g. Tracy on
+	// Vulkan) wrap the frame's primary command buffer in a GPU zone and collect timestamp
+	// results once per frame. No-ops by default so non-instrumented backends pay nothing.
+	// p_cmd_buffer must be in the recording state for both calls.
+	virtual void gpu_profiler_frame_begin(CommandBufferID p_cmd_buffer) {}
+	virtual void gpu_profiler_frame_end(CommandBufferID p_cmd_buffer) {}
+
 	/********************/
 	/**** SWAP CHAIN ****/
 	/********************/
