@@ -35,6 +35,7 @@
 #include "core/config/project_settings.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/profiling/profiling.h"
 #include "core/string/string_name.h"
 #include "scene/2d/audio_stream_player_2d.h"
 #include "scene/animation/animation_player.h"
@@ -1013,6 +1014,16 @@ bool AnimationMixer::_update_caches() {
 /* -------------------------------------------- */
 
 void AnimationMixer::_process_animation(double p_delta, bool p_update_only) {
+#if defined(GODOT_USE_TRACY)
+	// Per-mixer entry zone, tagged with the node path so each NPC/skeleton's
+	// animation cost is separable in the Tracy UI (and via trace_analysis).
+	ZoneNamedN(__godot_anim_mixer_zone, "AnimationMixer::_process_animation", true);
+	{
+		const String __anim_node_path = is_inside_tree() ? String(get_path()) : String(get_name());
+		const CharString __anim_node_utf8 = __anim_node_path.utf8();
+		ZoneTextV(__godot_anim_mixer_zone, __anim_node_utf8.get_data(), __anim_node_utf8.length());
+	}
+#endif
 	_blend_init();
 	if (cache_valid && _blend_pre_process(p_delta, track_count, track_map)) {
 		_blend_capture(p_delta);
@@ -1221,6 +1232,7 @@ void AnimationMixer::_blend_calc_total_weight() {
 }
 
 void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
+	GodotProfileZone("AnimationMixer::_blend_process");
 	// Apply value/transform/blend/bezier blends to track caches and execute method/audio/animation tracks.
 #ifdef TOOLS_ENABLED
 	bool can_call = is_inside_tree() && !Engine::get_singleton()->is_editor_hint();
@@ -1900,6 +1912,7 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 }
 
 void AnimationMixer::_blend_apply() {
+	GodotProfileZone("AnimationMixer::_blend_apply");
 	// Finally, set the tracks.
 	for (const KeyValue<Animation::TrackCacheID, TrackCache *> &K : track_cache) {
 		TrackCache *track = K.value;

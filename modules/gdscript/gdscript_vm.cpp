@@ -36,6 +36,10 @@
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
 
+#if defined(GODOT_USE_TRACY)
+#include "scene/main/node.h"
+#endif
+
 #ifdef DEBUG_ENABLED
 
 static bool _profile_count_as_native(const Object *p_base_obj, const StringName &p_methodname) {
@@ -498,6 +502,21 @@ void (*type_init_function_table[])(Variant *) = {
 
 Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_args, int p_argcount, Callable::CallError &r_err, CallState *p_state) {
 	GodotProfileZoneScript(this, source, name, name, _initial_line);
+#if defined(GODOT_USE_TRACY)
+	// Per-entity attribution: tag this script-call zone with the owning node's
+	// name so per-NPC / per-instance cost is separable in trace analysis (group
+	// by the CSV `value` column). This runs on every GDScript call, so it adds a
+	// small per-call cost to the *profiling* build only -- relative rankings stay
+	// valid; absolute GDScript dispatch time is inflated vs. a clean build. If
+	// that skew ever matters, switch Text() to a no-alloc owner instance id.
+	if (p_instance != nullptr) {
+		Node *__godot_owner_node = Object::cast_to<Node>(p_instance->owner);
+		if (__godot_owner_node != nullptr) {
+			const CharString __godot_owner_name = String(__godot_owner_node->get_name()).utf8();
+			__godot_tracy_script.Text(__godot_owner_name.get_data(), __godot_owner_name.length());
+		}
+	}
+#endif
 
 	OPCODES_TABLE;
 
