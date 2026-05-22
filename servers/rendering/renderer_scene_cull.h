@@ -276,6 +276,7 @@ public:
 			FLAG_VISIBILITY_DEPENDENCY_FADE_CHILDREN = (1 << 22),
 			FLAG_GEOM_PROJECTOR_SOFTSHADOW_DIRTY = (1 << 23),
 			FLAG_IGNORE_ALL_CULLING = (1 << 24),
+			FLAG_STATIC_SHADOW_CASTER = (1 << 25),
 		};
 
 		uint32_t flags = 0;
@@ -623,6 +624,7 @@ public:
 		RenderGeometryInstance *geometry_instance = nullptr;
 		HashSet<Instance *> lights;
 		bool can_cast_shadows;
+		bool can_cast_static_shadows;
 		bool material_is_animated;
 		uint32_t projector_count = 0;
 		uint32_t softshadow_count = 0;
@@ -634,6 +636,7 @@ public:
 
 		InstanceGeometryData() {
 			can_cast_shadows = true;
+			can_cast_static_shadows = true;
 			material_is_animated = true;
 		}
 	};
