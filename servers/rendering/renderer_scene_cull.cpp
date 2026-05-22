@@ -188,6 +188,9 @@ void RendererSceneCull::_instance_pair(Instance *p_A, Instance *p_B) {
 
 		if (geom->can_cast_shadows) {
 			light->make_shadow_dirty();
+			if (geom->can_cast_static_shadows) {
+				light->make_static_shadow_dirty();
+			}
 		}
 
 		if (A->scenario && A->array_index >= 0) {
@@ -313,6 +316,9 @@ void RendererSceneCull::_instance_unpair(Instance *p_A, Instance *p_B) {
 
 		if (geom->can_cast_shadows) {
 			light->make_shadow_dirty();
+			if (geom->can_cast_static_shadows) {
+				light->make_static_shadow_dirty();
+			}
 		}
 
 		if (A->scenario && A->array_index >= 0) {
@@ -941,6 +947,9 @@ void RendererSceneCull::instance_set_layer_mask(RID p_instance, uint32_t p_mask)
 			for (HashSet<RendererSceneCull::Instance *>::Iterator I = geom->lights.begin(); I != geom->lights.end(); ++I) {
 				InstanceLightData *light = static_cast<InstanceLightData *>((*I)->base_data);
 				light->make_shadow_dirty();
+				if (geom->can_cast_static_shadows) {
+					light->make_static_shadow_dirty();
+				}
 			}
 		}
 	}
@@ -1628,6 +1637,7 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		RSG::light_storage->light_instance_set_transform(light->instance, *instance_xform);
 		RSG::light_storage->light_instance_set_aabb(light->instance, instance_xform->xform(p_instance->aabb));
 		light->make_shadow_dirty();
+		light->make_static_shadow_dirty(); // light moved -> cached static depth is invalid
 
 		RS::LightBakeMode bake_mode = RSG::light_storage->light_get_bake_mode(p_instance->base);
 		if (RSG::light_storage->light_get_type(p_instance->base) != RS::LIGHT_DIRECTIONAL && bake_mode != light->bake_mode) {
@@ -1718,6 +1728,9 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 			for (const Instance *E : geom->lights) {
 				InstanceLightData *light = static_cast<InstanceLightData *>(E->base_data);
 				light->make_shadow_dirty();
+				if (geom->can_cast_static_shadows) {
+					light->make_static_shadow_dirty();
+				}
 			}
 		}
 
@@ -4111,6 +4124,9 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 				for (const Instance *E : geom->lights) {
 					InstanceLightData *light = static_cast<InstanceLightData *>(E->base_data);
 					light->make_shadow_dirty();
+					if (geom->can_cast_static_shadows) {
+						light->make_static_shadow_dirty();
+					}
 				}
 
 				geom->can_cast_shadows = can_cast_shadows;
