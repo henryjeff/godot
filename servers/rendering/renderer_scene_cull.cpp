@@ -2624,6 +2624,8 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			RSG::light_storage->light_instance_set_shadow_transform(light->instance, cm, light_transform, radius, 0, 0, 0);
 			shadow_data.light = light->instance;
 			shadow_data.pass = 0;
+			shadow_data.cache_static_spot = cache_static_spot;
+			shadow_data.cache_static_version = light->static_version;
 
 		} break;
 	}
@@ -3435,15 +3437,13 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && RSG::light_storage->light_get_type(ins->base) == RS::LIGHT_SPOT;
 
 			if (cache_static_spot) {
-				if (light->static_version != light->last_rendered_static_version) {
-					if (light_culler->prepare_regular_light(*ins)) {
-						light->last_version++;
-						light->last_rendered_static_version = light->static_version;
-						// Cached shadows are reused across camera angles, so the render must contain
-						// the FULL (camera-independent) static caster set, not the camera-tight cull
-						// that the legacy per-frame path uses. is_shadow_update_full() == (count==0).
-						light->clear_shadow_dirty();
-					}
+				// Approach A: redraw every visible frame to re-overlay dynamic casters onto the
+				// cached static depth. The static set is re-rendered (renderer side) only when
+				// static_version changes (tracked per-slot). Always use the FULL camera-independent
+				// caster set, since the cached static depth is reused across camera angles.
+				if (light_culler->prepare_regular_light(*ins)) {
+					light->last_version++;
+					light->clear_shadow_dirty();
 				}
 			} else if (light->is_shadow_dirty()) {
 				// Dirty shadows have no need to be drawn if
