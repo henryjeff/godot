@@ -2743,6 +2743,19 @@ void LightStorage::_shadow_atlas_invalidate_shadow(ShadowAtlas::Quadrant::Shadow
 		p_shadow->owner = RID();
 		sli->shadow_atlases.erase(p_atlas);
 	}
+
+	// Approach-A cached spot shadows: this slot's cached static depth belonged to the old owner
+	// (or an old slot size). Free it + force a re-render, so a reassigned/resized slot never
+	// texture_copies a stale static depth into the atlas — that's the source of phantom shadows.
+	if (p_shadow->static_fb.is_valid()) {
+		RD::get_singleton()->free_rid(p_shadow->static_fb);
+		p_shadow->static_fb = RID();
+	}
+	if (p_shadow->static_depth.is_valid()) {
+		RD::get_singleton()->free_rid(p_shadow->static_depth);
+		p_shadow->static_depth = RID();
+	}
+	p_shadow->cached_static_version = UINT64_MAX;
 }
 
 void LightStorage::shadow_atlas_update(RID p_atlas) {
