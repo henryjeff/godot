@@ -691,6 +691,9 @@ public:
 	struct InstanceLightData : public InstanceBaseData {
 		RID instance;
 		uint64_t last_version;
+		// Cached-shadow path (static/dynamic split): bumped ONLY by static-caster set/transform
+		// changes and light moves; dynamic casters never bump it. Consumed by the cached render path.
+		uint64_t static_version = 0;
 		List<Instance *>::Element *D; // directional light in scenario
 
 		bool uses_projector = false;
@@ -717,6 +720,7 @@ public:
 	public:
 		bool is_shadow_dirty() const { return shadow_dirty_count != 0; }
 		void make_shadow_dirty() { shadow_dirty_count = light_intersects_multiple_cameras ? 1 : 2; }
+		void make_static_shadow_dirty() { static_version++; }
 		void detect_light_intersects_multiple_cameras(uint32_t p_frame_id) {
 			// We need to detect the case where shadow updates are occurring
 			// more than once per frame. In this case, we need to turn off
