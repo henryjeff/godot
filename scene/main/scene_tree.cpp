@@ -198,6 +198,7 @@ void SceneTree::remove_from_group(const StringName &p_group, Node *p_node) {
 }
 
 void SceneTree::flush_transform_notifications() {
+	GodotProfileZone("SceneTree::flush_transform_notifications");
 	_THREAD_SAFE_METHOD_
 
 	SelfList<Node> *n = xform_change_list.first();
@@ -452,6 +453,7 @@ void SceneTree::call_group_flagsp(uint32_t p_call_flags, const StringName &p_gro
 }
 
 void SceneTree::notify_group_flags(uint32_t p_call_flags, const StringName &p_group, int p_notification) {
+	GodotProfileZone("SceneTree::notify_group_flags");
 	Vector<Node *> nodes_copy;
 	{
 		_THREAD_SAFE_METHOD_
@@ -637,6 +639,7 @@ void SceneTree::iteration_prepare() {
 }
 
 bool SceneTree::physics_process(double p_time) {
+	GodotProfileZone("SceneTree::physics_process");
 	current_frame++;
 
 	flush_transform_notifications();
@@ -686,6 +689,8 @@ void SceneTree::iteration_end() {
 }
 
 bool SceneTree::process(double p_time) {
+	GodotProfileZone("SceneTree::process");
+	GodotProfileZoneGroupedFirst(_st_process_zone, "FTI update");
 	// First pass of scene tree fixed timestep interpolation.
 	if (get_scene_tree_fti().is_enabled()) {
 		// Special, we need to ensure RenderingServer is up to date
@@ -703,6 +708,7 @@ bool SceneTree::process(double p_time) {
 
 	process_time = p_time;
 
+	GodotProfileZoneGrouped(_st_process_zone, "multiplayer::poll");
 	if (multiplayer_poll) {
 		multiplayer->poll();
 		for (KeyValue<NodePath, Ref<MultiplayerAPI>> &E : custom_multiplayers) {
@@ -710,30 +716,42 @@ bool SceneTree::process(double p_time) {
 		}
 	}
 
+	GodotProfileZoneGrouped(_st_process_zone, "emit process_frame");
 	emit_signal(SNAME("process_frame"));
 
+	GodotProfileZoneGrouped(_st_process_zone, "MessageQueue::flush (pre)");
 	MessageQueue::get_singleton()->flush(); //small little hack
 
+	GodotProfileZoneGrouped(_st_process_zone, "flush_transform_notifications (pre)");
 	flush_transform_notifications();
 
+	GodotProfileZoneGrouped(_st_process_zone, "SceneTree::_process");
 	_process(false);
 
+	GodotProfileZoneGrouped(_st_process_zone, "flush_ugc");
 	_flush_ugc();
+	GodotProfileZoneGrouped(_st_process_zone, "MessageQueue::flush (post)");
 	MessageQueue::get_singleton()->flush(); //small little hack
+	GodotProfileZoneGrouped(_st_process_zone, "flush_transform_notifications (post)");
 	flush_transform_notifications(); //transforms after world update, to avoid unnecessary enter/exit notifications
 
 	if (unlikely(pending_new_scene_id.is_valid())) {
 		_flush_scene_change();
 	}
 
+	GodotProfileZoneGrouped(_st_process_zone, "process_timers");
 	process_timers(p_time, false); //go through timers
+	GodotProfileZoneGrouped(_st_process_zone, "process_tweens");
 	process_tweens(p_time, false);
 
+	GodotProfileZoneGrouped(_st_process_zone, "flush_transform_notifications (timers)");
 	flush_transform_notifications(); // Additional transforms after timers update.
 
+	GodotProfileZoneGrouped(_st_process_zone, "flush_delete_queue");
 	// This should happen last because any processing that deletes something beforehand might expect the object to be removed in the same frame.
 	_flush_delete_queue();
 
+	GodotProfileZoneGrouped(_st_process_zone, "flush_accessibility + idle_callbacks");
 	_flush_accessibility_changes();
 
 	_call_idle_callbacks();
@@ -1181,6 +1199,7 @@ bool SceneTree::is_suspended() const {
 }
 
 void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
+	GodotProfileZone("SceneTree::_process_group");
 	// When reading this function, keep in mind that this code must work in a way where
 	// if any node is removed, this needs to continue working.
 
@@ -1220,6 +1239,15 @@ void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
 		if (!n->can_process() || !n->is_inside_tree()) {
 			continue;
 		}
+
+#if defined(GODOT_USE_TRACY)
+		ZoneNamedN(__godot_tracy_node_zone, "_process (node)", true);
+		{
+			const String &node_name = n->get_name();
+			CharString name_utf8 = node_name.utf8();
+			ZoneTextV(__godot_tracy_node_zone, name_utf8.get_data(), name_utf8.length());
+		}
+#endif
 
 		if (p_physics) {
 			if (n->is_physics_processing_internal()) {
