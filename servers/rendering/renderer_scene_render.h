@@ -284,6 +284,9 @@ public:
 		RID light;
 		int pass = 0;
 		PagedArray<RenderGeometryInstance *> instances;
+		// Approach-A cached spot shadows: dynamic casters rendered as a per-frame overlay on top
+		// of the cached static depth (rendered from `instances`). Empty for normal single-pass lights.
+		PagedArray<RenderGeometryInstance *> dynamic_instances;
 	};
 
 	struct RenderSDFGIData {
