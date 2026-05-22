@@ -287,6 +287,8 @@ public:
 		// Approach-A cached spot shadows: dynamic casters rendered as a per-frame overlay on top
 		// of the cached static depth (rendered from `instances`). Empty for normal single-pass lights.
 		PagedArray<RenderGeometryInstance *> dynamic_instances;
+		bool cache_static_spot = false; // this entry is a cached spot: static->cached depth + dynamic overlay
+		uint64_t cache_static_version = 0; // the light's current static_version (renderer compares vs the slot's)
 	};
 
 	struct RenderSDFGIData {

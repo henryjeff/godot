@@ -1161,6 +1161,14 @@ public:
 		return atlas->quadrants[p_quadrant].subdivision;
 	}
 
+	// Approach-A cached spot shadows (rendering/lights_and_shadows/cache_static_spot_shadows):
+	// render the static caster set into the per-slot cached FB returned here (only when
+	// shadow_atlas_cached_static_take_dirty() reports a version change), then texture_copy
+	// shadow_atlas_get_cached_static_depth() into the atlas slot before the dynamic overlay.
+	RID shadow_atlas_get_cached_static_fb(RID p_atlas, RID p_light_instance);
+	RID shadow_atlas_get_cached_static_depth(RID p_atlas, RID p_light_instance);
+	bool shadow_atlas_cached_static_take_dirty(RID p_atlas, RID p_light_instance, uint64_t p_static_version);
+
 	_FORCE_INLINE_ RID shadow_atlas_get_fb(RID p_atlas) {
 		ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
 		ERR_FAIL_NULL_V(atlas, RID());
