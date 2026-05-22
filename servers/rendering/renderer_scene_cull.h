@@ -697,6 +697,9 @@ public:
 		// Cached-shadow path (static/dynamic split): bumped ONLY by static-caster set/transform
 		// changes and light moves; dynamic casters never bump it. Consumed by the cached render path.
 		uint64_t static_version = 0;
+		// Cached-spot render gate (P3 approach B): the static_version at the light's last shadow
+		// render. Init to a sentinel so the first frame always renders. Redraw iff != static_version.
+		uint64_t last_rendered_static_version = UINT64_MAX;
 		List<Instance *>::Element *D; // directional light in scenario
 
 		bool uses_projector = false;
@@ -724,6 +727,7 @@ public:
 		bool is_shadow_dirty() const { return shadow_dirty_count != 0; }
 		void make_shadow_dirty() { shadow_dirty_count = light_intersects_multiple_cameras ? 1 : 2; }
 		void make_static_shadow_dirty() { static_version++; }
+		void clear_shadow_dirty() { shadow_dirty_count = 0; } // force a full (camera-independent) caster set on the next render
 		void detect_light_intersects_multiple_cameras(uint32_t p_frame_id) {
 			// We need to detect the case where shadow updates are occurring
 			// more than once per frame. In this case, we need to turn off
