@@ -783,6 +783,46 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 	GodotProfileZoneGroupedFirst(_profile_zone, "prepare viewports");
 	timestamp_vp_map.clear();
 
+	{
+		// Per-frame rebuild-budget counter (permanent feature, not diagnostic — reset unconditionally).
+		extern uint32_t g_static_rebuilds_this_frame;
+		g_static_rebuilds_this_frame = 0;
+	}
+
+#if defined(GODOT_USE_TRACY)
+	// DIAGNOSTIC (cached-spot shadow): reset the per-frame counters before this frame's render; the
+	// totals are emitted as the "shadow cache diag" zone after the viewport loop below.
+	{
+		extern uint32_t g_shadow_cache_miss_fb, g_shadow_cache_rerender, g_shadow_cache_hit;
+		extern uint32_t g_static_dirty_xform, g_static_dirty_flag, g_static_dirty_lightmove, g_static_dirty_pair, g_static_dirty_misc;
+		extern uint32_t g_atlas_kept, g_atlas_should_realloc, g_atlas_no_owner, g_atlas_found_new, g_atlas_find_failed, g_atlas_invalidate, g_atlas_inval_freed_static;
+		extern uint32_t g_static_fb_alloc, g_takedirty_cached_max, g_takedirty_cached_stale, g_atlas_resize;
+		extern uint32_t g_spot_cull_count, g_spot_multicam, g_cache_gate_fired;
+		g_static_fb_alloc = 0;
+		g_takedirty_cached_max = 0;
+		g_takedirty_cached_stale = 0;
+		g_atlas_resize = 0;
+		g_spot_cull_count = 0;
+		g_spot_multicam = 0;
+		g_cache_gate_fired = 0;
+		g_shadow_cache_miss_fb = 0;
+		g_shadow_cache_rerender = 0;
+		g_shadow_cache_hit = 0;
+		// RUN 11: do NOT reset the make_static_shadow_dirty source counters — they're CUMULATIVE now.
+		// The per-frame reset was firing AFTER the increments (which happen during dirty-instance
+		// processing, before draw_viewports), so they always read 0 (the artifact that hid the real
+		// source for runs 5-10). Cumulative slope (delta/frames) reveals which source fires ~11/frame.
+		// (g_static_dirty_* intentionally NOT zeroed here.)
+		g_atlas_kept = 0;
+		g_atlas_should_realloc = 0;
+		g_atlas_no_owner = 0;
+		g_atlas_found_new = 0;
+		g_atlas_find_failed = 0;
+		g_atlas_invalidate = 0;
+		g_atlas_inval_freed_static = 0;
+	}
+#endif
+
 #ifndef XR_DISABLED
 	// get our xr interface in case we need it
 	Ref<XRInterface> xr_interface;
@@ -968,6 +1008,14 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 		objects_drawn += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME] + vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME];
 		vertices_drawn += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME] + vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME];
 		draw_calls_used += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME] + vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME];
+		// Cached static spot-shadow stats: surface the per-frame counters (global, dominated by the
+		// shadow-rendering viewport) so the game can read them via viewport_get_render_info.
+		{
+			extern uint32_t g_shadow_cache_hit, g_shadow_cache_rerender, g_shadow_cache_miss_fb;
+			vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_SHADOW_CACHE_HITS] = (int)g_shadow_cache_hit;
+			vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_SHADOW_CACHE_REBUILDS] = (int)g_shadow_cache_rerender;
+			vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_SHADOW_CACHE_MISSES] = (int)g_shadow_cache_miss_fb;
+		}
 		// 2D render info.
 		objects_drawn += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_CANVAS][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME];
 		vertices_drawn += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_CANVAS][RSE::VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME];
@@ -989,6 +1037,74 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 		}
 #endif
 	}
+
+#if defined(GODOT_USE_TRACY)
+	// DIAGNOSTIC (cached-spot shadow): one line per frame.
+	//   sc_miss = cached fb invalid -> full untight static render (slot reshuffle / never-alloc, "H2")
+	//   sc_re   = static_version changed -> static set re-rendered into cache ("H1")
+	//   sc_hit  = cache hit -> only dynamic overlay + texture_copy (the win)
+	//   sd_*    = which path bumped static_version (xform/flag/lightmove/pair/misc) -> H1's source
+	// Query: audit.py bynode "shadow cache diag"
+	{
+		ZoneNamedN(__sc_zone, "shadow cache diag", true);
+		extern uint32_t g_shadow_cache_miss_fb, g_shadow_cache_rerender, g_shadow_cache_hit;
+		extern uint32_t g_static_dirty_xform, g_static_dirty_flag, g_static_dirty_lightmove, g_static_dirty_pair, g_static_dirty_misc;
+		extern uint32_t g_atlas_kept, g_atlas_should_realloc, g_atlas_no_owner, g_atlas_found_new, g_atlas_find_failed, g_atlas_invalidate, g_atlas_inval_freed_static;
+		String __s = String("sc_miss=") + itos(g_shadow_cache_miss_fb);
+		__s += String(" sc_re=") + itos(g_shadow_cache_rerender);
+		__s += String(" sc_hit=") + itos(g_shadow_cache_hit);
+		__s += String(" sd_xf=") + itos(g_static_dirty_xform);
+		__s += String(" sd_fl=") + itos(g_static_dirty_flag);
+		__s += String(" sd_lm=") + itos(g_static_dirty_lightmove);
+		__s += String(" sd_pr=") + itos(g_static_dirty_pair);
+		__s += String(" sd_mc=") + itos(g_static_dirty_misc);
+		// atlas-slot churn (RUN 6): kept=cache survived, realloc=resize thrash, no_owner=evicted/first,
+		// found=reassigned, find_fail=no slot, inval=total invalidates, inval_free=real caches destroyed
+		__s += String(" at_kept=") + itos(g_atlas_kept);
+		__s += String(" at_realloc=") + itos(g_atlas_should_realloc);
+		__s += String(" at_noown=") + itos(g_atlas_no_owner);
+		__s += String(" at_found=") + itos(g_atlas_found_new);
+		__s += String(" at_findfail=") + itos(g_atlas_find_failed);
+		__s += String(" at_inval=") + itos(g_atlas_invalidate);
+		__s += String(" at_invalfree=") + itos(g_atlas_inval_freed_static);
+		// RUN 9 paradox crackers + multi-viewport provers
+		extern uint32_t g_static_fb_alloc, g_takedirty_cached_max, g_takedirty_cached_stale, g_atlas_resize;
+		extern uint32_t g_spot_cull_count, g_spot_multicam, g_cache_gate_fired;
+		__s += String(" sfb_alloc=") + itos(g_static_fb_alloc);
+		__s += String(" td_max=") + itos(g_takedirty_cached_max);
+		__s += String(" td_stale=") + itos(g_takedirty_cached_stale);
+		__s += String(" resize=") + itos(g_atlas_resize);
+		__s += String(" spot_cull=") + itos(g_spot_cull_count);
+		__s += String(" spot_mc=") + itos(g_spot_multicam);
+		__s += String(" gate=") + itos(g_cache_gate_fired);
+		// RUN 10: actual version values (last cached-spot this frame). If td_p tracks cull_lv
+		// (incrementing) while cull_sv is constant -> cache key is effectively last_version (H1).
+		extern uint64_t g_td_last_p, g_td_last_cached, g_cull_last_static_version, g_cull_last_lastversion;
+		__s += String(" td_p=") + itos((int64_t)g_td_last_p);
+		__s += String(" td_cached=") + itos((int64_t)g_td_last_cached);
+		__s += String(" cull_sv=") + itos((int64_t)g_cull_last_static_version);
+		__s += String(" cull_lv=") + itos((int64_t)g_cull_last_lastversion);
+		// RUN 12: WHERE the churn is. Bounding box of all static casters that fired the transform-path
+		// dirty (cumulative). Tight box = one mis-tagged mover; store-wide = the items. last_base =
+		// the churning mesh RID (constant => single mesh); last_size = its footprint.
+		extern Vector3 g_churn_min, g_churn_max, g_churn_last_size;
+		extern uint64_t g_churn_count, g_churn_last_base;
+		__s += String(" churn_n=") + itos((int64_t)g_churn_count);
+		// '/' separators (NOT commas — the diag line is logged into a comma-delimited CSV).
+		__s += String(" churn_min=") + rtos(g_churn_min.x) + "/" + rtos(g_churn_min.y) + "/" + rtos(g_churn_min.z);
+		__s += String(" churn_max=") + rtos(g_churn_max.x) + "/" + rtos(g_churn_max.y) + "/" + rtos(g_churn_max.z);
+		__s += String(" churn_size=") + rtos(g_churn_last_size.x) + "/" + rtos(g_churn_last_size.y) + "/" + rtos(g_churn_last_size.z);
+		__s += String(" churn_base=") + itos((int64_t)g_churn_last_base);
+		extern uint64_t g_churn_mmi, g_churn_mesh, g_churn_other, g_churn_skinned, g_churn_last_type;
+		__s += String(" churn_mmi=") + itos((int64_t)g_churn_mmi);
+		__s += String(" churn_mesh=") + itos((int64_t)g_churn_mesh);
+		__s += String(" churn_other=") + itos((int64_t)g_churn_other);
+		__s += String(" churn_skinned=") + itos((int64_t)g_churn_skinned);
+		__s += String(" churn_ltype=") + itos((int64_t)g_churn_last_type);
+		const CharString __c = __s.utf8();
+		ZoneTextV(__sc_zone, __c.get_data(), __c.length());
+	}
+#endif
 
 	RSG::scene->set_debug_draw_mode(RSE::VIEWPORT_DEBUG_DRAW_DISABLED);
 

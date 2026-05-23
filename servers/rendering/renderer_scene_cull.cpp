@@ -173,6 +173,53 @@ void RendererSceneCull::occluder_set_mesh(RID p_occluder, const PackedVector3Arr
 
 /* SCENARIO API */
 
+// DIAGNOSTIC (cached-spot shadow): per-viewport counters attributing make_static_shadow_dirty() to
+// its source. If the cache misses every frame ("H1"), these say WHICH path bumps static_version.
+// Read+reset in renderer_viewport.cpp's "render viewport" ZoneText.
+//   xform     = _update_instance: a static caster's transform/AABB changed (prime suspect: POM
+//               dormant MultiMesh, or a static-tagged mover)
+//   flag      = instance_geometry_set_flag: static_shadow_caster toggled at runtime
+//   lightmove = _update_instance: the light itself moved (swinging spot)
+//   pair      = a static caster paired/unpaired with the light (player walking changes pairings)
+//   misc      = layer-mask / material-cast-shadow change (rare)
+uint32_t g_static_dirty_xform = 0;
+uint32_t g_static_dirty_flag = 0;
+uint32_t g_static_dirty_lightmove = 0;
+uint32_t g_static_dirty_pair = 0;
+uint32_t g_static_dirty_misc = 0;
+
+// DIAGNOSTIC (RUN 9): multi-viewport provers. The cache cull-gate runs once PER VIEWPORT on shared
+// per-light state; with N shared-world cameras these inflate.
+//   spot_cull = # of times a cached-spot is processed in the per-light cull loop this frame (ALL
+//               viewports). ~16 if single-viewport; ~16*N if N cameras cull the shared world.
+//   spot_mc   = of those, how many had light_intersects_multiple_cameras == true (multi-camera flagged)
+//   gate      = # of times the cache cull-gate body fired (last_version++/clear_shadow_dirty)
+uint32_t g_spot_cull_count = 0;
+uint32_t g_spot_multicam = 0;
+uint32_t g_cache_gate_fired = 0;
+// RUN 10: what static_version vs last_version did the cull capture for a cached spot (last one wins)?
+// Compare cull_sv against take_dirty's td_p: if td_p tracks last_version while cull_sv is constant,
+// the cache key is effectively last_version (H1) and the wire is crossed between cull and render.
+uint64_t g_cull_last_static_version = 0;
+uint64_t g_cull_last_lastversion = 0;
+// RUN 12: WHERE is the churn? World-space AABB bounding box of every static caster that fires
+// make_static_shadow_dirty via the transform path (line ~1739). TIGHT box = one mis-tagged mover
+// (e.g. the truck lift); store-wide box = the items themselves. Cumulative (no reset). Also the last
+// firing caster's base RID (constant = a single mesh churning) and AABB size (per-instance footprint).
+Vector3 g_churn_min;
+Vector3 g_churn_max;
+uint64_t g_churn_count = 0;
+uint64_t g_churn_last_base = 0;
+Vector3 g_churn_last_size;
+// RUN 13: WHAT kind of geometry churns. mmi=POM dormant MultiMesh; mesh=regular MeshInstance3D
+// (shelf/prop/skinned char); other=particles/etc; skinned=has a skeleton (armature-animated → AABB
+// recomputes every frame). last_type = base_type of the most recent churner.
+uint64_t g_churn_mmi = 0;
+uint64_t g_churn_mesh = 0;
+uint64_t g_churn_other = 0;
+uint64_t g_churn_skinned = 0;
+uint64_t g_churn_last_type = 0;
+
 void RendererSceneCull::_instance_pair(Instance *p_A, Instance *p_B) {
 	RendererSceneCull *self = (RendererSceneCull *)singleton;
 	Instance *A = p_A;
@@ -198,6 +245,7 @@ void RendererSceneCull::_instance_pair(Instance *p_A, Instance *p_B) {
 		if (geom->can_cast_shadows) {
 			light->make_shadow_dirty();
 			if (geom->can_cast_static_shadows) {
+				g_static_dirty_pair++; // DIAGNOSTIC
 				light->make_static_shadow_dirty();
 			}
 		}
@@ -326,6 +374,7 @@ void RendererSceneCull::_instance_unpair(Instance *p_A, Instance *p_B) {
 		if (geom->can_cast_shadows) {
 			light->make_shadow_dirty();
 			if (geom->can_cast_static_shadows) {
+				g_static_dirty_pair++; // DIAGNOSTIC
 				light->make_static_shadow_dirty();
 			}
 		}
@@ -956,6 +1005,7 @@ void RendererSceneCull::instance_set_layer_mask(RID p_instance, uint32_t p_mask)
 				InstanceLightData *light = static_cast<InstanceLightData *>((*I)->base_data);
 				light->make_shadow_dirty();
 				if (geom->can_cast_static_shadows) {
+					g_static_dirty_misc++; // DIAGNOSTIC: layer-mask change
 					light->make_static_shadow_dirty();
 				}
 			}
@@ -1329,6 +1379,7 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 				// a stale cached depth -> phantom shadows.
 				for (Instance *E : geom->lights) {
 					InstanceLightData *light = static_cast<InstanceLightData *>(E->base_data);
+					g_static_dirty_flag++; // DIAGNOSTIC: static_shadow_caster toggled at runtime
 					light->make_static_shadow_dirty();
 				}
 			}
@@ -1607,6 +1658,16 @@ Variant RendererSceneCull::instance_geometry_get_shader_parameter(RID p_instance
 	return instance->instance_uniforms.get(p_parameter);
 }
 
+bool RendererSceneCull::instance_geometry_get_auto_demoted(RID p_instance) const {
+	const Instance *instance = instance_owner.get_or_null(p_instance);
+	ERR_FAIL_NULL_V(instance, false);
+	if (!((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !instance->base_data) {
+		return false;
+	}
+	const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(instance->base_data);
+	return geom->auto_demoted_dynamic;
+}
+
 Variant RendererSceneCull::instance_geometry_get_shader_parameter_default_value(RID p_instance, const StringName &p_parameter) const {
 	const Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL_V(instance, Variant());
@@ -1652,7 +1713,29 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		RSG::light_storage->light_instance_set_transform(light->instance, *instance_xform);
 		RSG::light_storage->light_instance_set_aabb(light->instance, instance_xform->xform(p_instance->aabb));
 		light->make_shadow_dirty();
+		g_static_dirty_lightmove++; // DIAGNOSTIC
 		light->make_static_shadow_dirty(); // light moved -> cached static depth is invalid
+
+		// Cached-shadow LIGHT-MOVEMENT GATE: record beyond-threshold spot movement so the cull can route
+		// a moving spot to the cheap stock path (a moving light's cached static depth is in the wrong
+		// projection; a cached MISS costs more than the stock tight-culled render). Re-caches once still.
+		if (GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && RSG::light_storage->light_get_type(p_instance->base) == RSE::LIGHT_SPOT) {
+			if (!light->light_transform_initialized) {
+				light->last_cached_transform = *instance_xform;
+				light->light_transform_initialized = true;
+				light->last_light_move_frame_id = 0; // init is not a "move" -> cacheable immediately if still
+			} else {
+				const real_t __pos_thresh = (real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_light_move_pos_threshold");
+				const real_t __angle_cos = Math::cos(Math::deg_to_rad((real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_light_move_angle_threshold")));
+				const real_t __pos_d = instance_xform->origin.distance_to(light->last_cached_transform.origin);
+				const Vector3 __fwd_now = -instance_xform->basis.get_column(2).normalized();
+				const Vector3 __fwd_ref = -light->last_cached_transform.basis.get_column(2).normalized();
+				if (__pos_d > __pos_thresh || __fwd_now.dot(__fwd_ref) < __angle_cos) {
+					light->last_light_move_frame_id = Engine::get_singleton()->get_frames_drawn();
+					light->last_cached_transform = *instance_xform;
+				}
+			}
+		}
 
 		RSE::LightBakeMode bake_mode = RSG::light_storage->light_get_bake_mode(p_instance->base);
 		if (RSG::light_storage->light_get_type(p_instance->base) != RSE::LIGHT_DIRECTIONAL && bake_mode != light->bake_mode) {
@@ -1740,10 +1823,71 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		//make sure lights are updated if it casts shadow
 
 		if (geom->can_cast_shadows) {
+			// RUN 12: localize the churn. Capture WHERE a static caster sits when its transform update
+			// dirties paired lights — once per instance (not per paired light). Unconditional: this TU
+			// does not have GODOT_USE_TRACY defined (the #if compiled it out last build → churn_n=0).
+			if (geom->can_cast_static_shadows && !geom->lights.is_empty()) {
+				const Vector3 __cc = p_instance->transformed_aabb.get_center();
+				if (g_churn_count == 0) {
+					g_churn_min = __cc;
+					g_churn_max = __cc;
+				} else {
+					if (__cc.x < g_churn_min.x) { g_churn_min.x = __cc.x; }
+					if (__cc.y < g_churn_min.y) { g_churn_min.y = __cc.y; }
+					if (__cc.z < g_churn_min.z) { g_churn_min.z = __cc.z; }
+					if (__cc.x > g_churn_max.x) { g_churn_max.x = __cc.x; }
+					if (__cc.y > g_churn_max.y) { g_churn_max.y = __cc.y; }
+					if (__cc.z > g_churn_max.z) { g_churn_max.z = __cc.z; }
+				}
+				g_churn_count++;
+				g_churn_last_base = p_instance->base.get_id();
+				g_churn_last_size = p_instance->transformed_aabb.size;
+				// RUN 13: WHAT KIND of object churns? MULTIMESH = POM dormant; MESH = regular mesh
+				// (shelf/prop/skinned char); other = particles/etc. + is it skinned (skeleton-driven)?
+				switch (p_instance->base_type) {
+					case RS::INSTANCE_MULTIMESH: g_churn_mmi++; break;
+					case RS::INSTANCE_MESH: g_churn_mesh++; break;
+					default: g_churn_other++; break;
+				}
+				if (p_instance->skeleton.is_valid()) { g_churn_skinned++; }
+				g_churn_last_type = (uint64_t)p_instance->base_type;
+			}
+			// Cached-shadow SELF-HEAL: decide whether this static caster's move should re-dirty the
+			// per-light static cache. With caching ON, a caster authored static but observed to MOVE is
+			// demoted to dynamic ONCE (drops out of the static set) and bumps each paired light a single
+			// time so the static depth re-renders without it; thereafter its motion is the dynamic
+			// overlay's job and it never churns the cache again ("one bad apple" fix). Cache OFF =
+			// unchanged (bump as before; static_version is unread on that path).
+			bool __static_bump = true;
+			if (geom->can_cast_static_shadows) {
+				const bool __cache_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows");
+				if (__cache_spot) {
+					if (geom->auto_demoted_dynamic) {
+						__static_bump = false; // already dynamic; do not churn the static set
+					} else if (p_instance->teleported && !GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_demote_on_teleport")) {
+						__static_bump = true; // spawn-snap / explicit teleport: re-cache at the new spot, stay static
+					} else {
+						const AABB &__cur = p_instance->transformed_aabb;
+						const AABB &__prv = p_instance->prev_transformed_aabb;
+						bool __moved = false;
+						if (__prv.has_surface()) { // first frame has a zero prev-AABB; don't spuriously demote
+							const real_t __eps = (real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_demote_epsilon");
+							__moved = __cur.get_center().distance_to(__prv.get_center()) > __eps || (__cur.size - __prv.size).length() > __eps;
+						}
+						if (__moved) {
+							geom->auto_demoted_dynamic = true; // self-heal: this caster lied about being static
+							__static_bump = true; // bump ONCE so the static set re-renders without it
+						} else {
+							__static_bump = false; // sub-epsilon jitter: treat as still, don't churn
+						}
+					}
+				}
+			}
 			for (const Instance *E : geom->lights) {
 				InstanceLightData *light = static_cast<InstanceLightData *>(E->base_data);
 				light->make_shadow_dirty();
-				if (geom->can_cast_static_shadows) {
+				if (geom->can_cast_static_shadows && __static_bump) {
+					g_static_dirty_xform++; // DIAGNOSTIC: static caster transform/AABB changed
 					light->make_static_shadow_dirty();
 				}
 			}
@@ -2401,7 +2545,7 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 	}
 }
 
-bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers) {
+bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers, bool p_cache_eligible) {
 	InstanceLightData *light = static_cast<InstanceLightData *>(p_instance->base_data);
 
 	Transform3D light_transform = p_instance->transform;
@@ -2590,10 +2734,11 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 			instance_shadow_cull_result.clear();
 
-			// P3 approach B (experimental, default off): a cached spot renders ONLY static casters,
-			// so dynamic casters (player/NPCs) are excluded from the cull below. Moving spots never
-			// cache (static_version bumps every frame), so this only affects truly-stationary spots.
-			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows");
+			// A cached spot renders ONLY static casters; dynamic (and auto-demoted) casters are excluded
+			// and overlaid per-frame. SINGLE SOURCE OF TRUTH: the caller (cull gate) computed full
+			// cacheability (setting + SPOT + light-movement gate + screen coverage) and passed it in, so
+			// the split and the gate cannot disagree. Not eligible -> everything in `instances` (stock path).
+			const bool cache_static_spot = p_cache_eligible;
 
 			Vector<Vector3> points = Geometry3D::compute_convex_mesh_points(&planes[0], planes.size());
 
@@ -2636,7 +2781,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 				// Step 2a populates dynamic_instances; the overlay render consuming it is step 2b
 				// (until then the renderer ignores dynamic_instances, i.e. behaves as approach B).
 				InstanceGeometryData *spot_geom = static_cast<InstanceGeometryData *>(instance->base_data);
-				if (cache_static_spot && !spot_geom->can_cast_static_shadows) {
+				if (cache_static_spot && (!spot_geom->can_cast_static_shadows || spot_geom->auto_demoted_dynamic)) {
 					shadow_data.dynamic_instances.push_back(spot_geom->geometry_instance);
 				} else {
 					shadow_data.instances.push_back(spot_geom->geometry_instance);
@@ -2650,6 +2795,8 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			shadow_data.pass = 0;
 			shadow_data.cache_static_spot = cache_static_spot;
 			shadow_data.cache_static_version = light->static_version;
+			g_cull_last_static_version = light->static_version; // RUN 10
+			g_cull_last_lastversion = light->last_version;       // RUN 10
 
 		} break;
 		case RSE::LIGHT_AREA: {
@@ -3662,20 +3809,41 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// so that we can turn off tighter caster culling.
 			light->detect_light_intersects_multiple_cameras(Engine::get_singleton()->get_frames_drawn());
 
-			// P3 approach B: a cached stationary spot re-renders ONLY when its static caster set
-			// changed (static_version). Dynamic casters bump the legacy shadow_dirty_count (ignored
-			// here) but not static_version, so the player walking under it no longer forces a
-			// re-render. A moving spot bumps static_version every frame -> always redraws -> auto
-			// fallback to legacy per-frame behavior.
-			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && RSG::light_storage->light_get_type(ins->base) == RS::LIGHT_SPOT;
+			// P3 approach A (LAZY): a cached spot reuses its cached static depth and re-overlays the
+			// dynamic casters, but ONLY on frames where its shadow can actually have changed.
+			// SINGLE SOURCE OF TRUTH (matches the split in _light_instance_update_shadow): a spot that
+			// moved recently is not cacheable -> falls through to the stock dirty-gated path below.
+			// Screen-coverage gate: skip caching for spots smaller than min_coverage (default 0 = no gate)
+			// so off-screen / tiny lights take the stock path instead of paying a camera-independent miss.
+			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows")
+					&& RSG::light_storage->light_get_type(ins->base) == RS::LIGHT_SPOT
+					&& light->is_light_cacheable(Engine::get_singleton()->get_frames_drawn(), (uint32_t)GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_light_still_cooldown_frames"))
+					&& coverage >= (real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_min_coverage");
 
 			if (cache_static_spot) {
-				// Approach A: redraw every visible frame to re-overlay dynamic casters onto the
-				// cached static depth. The static set is re-rendered (renderer side) only when
-				// static_version changes (tracked per-slot). Always use the FULL camera-independent
-				// caster set, since the cached static depth is reused across camera angles.
-				if (light_culler->prepare_regular_light(*ins)) {
+				g_spot_cull_count++; // DIAGNOSTIC: a cached-spot processed in cull (this viewport)
+				if (light->intersects_multiple_cameras()) { g_spot_multicam++; } // DIAGNOSTIC
+				// Redraw this cached spot ONLY when something that affects its shadow changed:
+				//   - is_shadow_dirty(): a paired caster moved (make_shadow_dirty() fires for BOTH
+				//     static AND dynamic casters in the pair/unpair/transform/mask paths) or the
+				//     light moved -> catches the dynamic overlay needing a refresh.
+				//   - static_version change: the static caster set changed. Belt-and-suspenders for
+				//     is_shadow_dirty(), AND essential for the set_static_shadow_caster flag-toggle
+				//     path (renderer_scene_cull line ~1324), which bumps static_version WITHOUT
+				//     make_shadow_dirty() -> a pure is_shadow_dirty() gate would leave a stale cache.
+				// Idle spots (nothing moved) are skipped entirely, exactly like the stock dirty-gated
+				// path below. The earlier version redrew EVERY visible frame; that made the cache a
+				// NET LOSS in the mostly-static store (most ceiling spots have no nearby motion yet
+				// were re-rendered every frame on the full caster set) while it only won in the
+				// all-moving test level. clear_shadow_dirty() keeps the FULL camera-independent caster
+				// set so the cached static depth stays valid across cameras / multiple viewports; the
+				// renderer re-renders the static set itself only when static_version changed (per-slot),
+				// otherwise a redraw is just the dynamic overlay + texture_copy.
+				const bool static_changed = light->static_version != light->last_rendered_static_version;
+				if ((light->is_shadow_dirty() || static_changed) && light_culler->prepare_regular_light(*ins)) {
+					g_cache_gate_fired++; // DIAGNOSTIC: cache cull-gate body fired (mutates shared light state)
 					light->last_version++;
+					light->last_rendered_static_version = light->static_version;
 					light->clear_shadow_dirty();
 				}
 			} else if (light->is_shadow_dirty()) {
@@ -3706,7 +3874,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			if (redraw && max_shadows_used < MAX_UPDATE_SHADOWS) {
 				//must redraw!
 				RENDER_TIMESTAMP("> Render Light3D " + itos(i));
-				if (_light_instance_update_shadow(ins, p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_shadow_atlas, scenario, p_screen_mesh_lod_threshold, p_visible_layers)) {
+				if (_light_instance_update_shadow(ins, p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_shadow_atlas, scenario, p_screen_mesh_lod_threshold, p_visible_layers, cache_static_spot)) {
 					light->make_shadow_dirty();
 				}
 				RENDER_TIMESTAMP("< Render Light3D " + itos(i));
@@ -4396,6 +4564,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 					InstanceLightData *light = static_cast<InstanceLightData *>(E->base_data);
 					light->make_shadow_dirty();
 					if (geom->can_cast_static_shadows) {
+						g_static_dirty_misc++; // DIAGNOSTIC: material cast-shadow change
 						light->make_static_shadow_dirty();
 					}
 				}
@@ -4614,6 +4783,24 @@ RendererSceneCull::RendererSceneCull() {
 	// Debug isolate view for the cached-spot static/dynamic split: 0 = full (cached static +
 	// dynamic overlay), 1 = static casters only, 2 = dynamic casters only. Toggle to see the split.
 	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_shadows_debug", 0);
+	// Self-heal: a static_shadow_caster whose world AABB center/size moves more than this (meters) is
+	// demoted to a dynamic caster ONCE (then never churns the cache again).
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_demote_epsilon", 0.01);
+	// If false (default), a teleported static caster re-caches at its new spot instead of demoting
+	// (handles one-shot spawn-snaps without losing caching).
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_demote_on_teleport", false);
+	// Light-movement gate: a spot whose origin moves more than this (meters) OR whose aim rotates more
+	// than the angle threshold (degrees) is treated as moving -> falls back to the stock per-frame path.
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_light_move_pos_threshold", 0.01);
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_light_move_angle_threshold", 0.5);
+	// Frames a spot must stay still (under both thresholds) before it is cacheable again.
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_light_still_cooldown_frames", 6);
+	// Screen-coverage gate: spots whose projected coverage is below this fraction take the stock path
+	// (avoids paying a camera-independent cached MISS for tiny/off-screen lights). 0 = no gating.
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_min_coverage", 0.0);
+	// Rebuild budget: max cached-spot static re-renders per frame (spreads a burst over frames; an
+	// already-cached spot reuses its stale depth one extra frame when over budget). 0 = unlimited.
+	GLOBAL_DEF("rendering/lights_and_shadows/cache_static_spot_max_rebuilds_per_frame", 0);
 }
 
 RendererSceneCull::~RendererSceneCull() {
