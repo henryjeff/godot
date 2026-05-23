@@ -2349,6 +2349,22 @@ void LightStorage::shadow_atlas_free(RID p_atlas) {
 	shadow_atlas_owner.free(p_atlas);
 }
 
+// DIAGNOSTIC (cached-spot shadow, RUN 9): paradox-cracker counters. Read+reset in renderer_viewport.cpp.
+//   sfb_alloc   = fresh static_fb allocations/frame (get_cached_static_fb). If ~13 -> static_fb is freed+
+//                 realloc'd every frame (so cache is destroyed) WITHOUT _shadow_atlas_invalidate_shadow.
+//   td_max      = take_dirty returned true with slot.cached_static_version == UINT64_MAX (fresh/reset state)
+//   td_stale    = take_dirty returned true with cached != UINT64_MAX and != wanted (genuine version mismatch)
+//   resize      = an actual shadows.resize() happened (set_size / set_quadrant_subdivision past their
+//                 early-return). If >0/frame -> the atlas is being reconfigured every frame (struct recreate
+//                 -> resets cached_static_version to UINT64_MAX, leaks static_fb RIDs, bypasses invalidate).
+uint32_t g_static_fb_alloc = 0;
+uint32_t g_takedirty_cached_max = 0;
+uint32_t g_takedirty_cached_stale = 0;
+uint32_t g_atlas_resize = 0;
+// RUN 10: actual version VALUES when take_dirty goes stale — to see if the passed key is changing.
+uint64_t g_td_last_p = 0;      // p_static_version received by take_dirty (what the renderer threaded in)
+uint64_t g_td_last_cached = 0; // slot.cached_static_version before overwrite
+
 void LightStorage::_update_shadow_atlas(ShadowAtlas *shadow_atlas) {
 	if (shadow_atlas->size > 0 && shadow_atlas->depth.is_null()) {
 		RD::TextureFormat tf;
@@ -2379,6 +2395,7 @@ void LightStorage::shadow_atlas_set_size(RID p_atlas, int p_size, bool p_16_bits
 		RD::get_singleton()->free_rid(shadow_atlas->depth);
 		shadow_atlas->depth = RID();
 	}
+	g_atlas_resize++; // DIAGNOSTIC: atlas size actually changed (past early-return)
 	for (int i = 0; i < 4; i++) {
 		//clear subdivisions
 		shadow_atlas->quadrants[i].shadows.clear();
@@ -2428,6 +2445,7 @@ void LightStorage::shadow_atlas_set_quadrant_subdivision(RID p_atlas, int p_quad
 		}
 	}
 
+	g_atlas_resize++; // DIAGNOSTIC: quadrant subdivision actually changed (past early-return)
 	shadow_atlas->quadrants[p_quadrant].shadows.clear();
 	shadow_atlas->quadrants[p_quadrant].shadows.resize(subdiv * subdiv);
 	shadow_atlas->quadrants[p_quadrant].subdivision = subdiv;
@@ -2588,6 +2606,25 @@ bool LightStorage::_shadow_atlas_find_omni_shadows(ShadowAtlas *shadow_atlas, in
 	return false;
 }
 
+// DIAGNOSTIC (cached-spot shadow): per-frame atlas-slot churn counters. Read+reset in
+// renderer_viewport.cpp's "shadow cache diag" zone. These say WHY the per-slot static cache keeps
+// getting invalidated (RUN 5 found sc_re=13/frame with static_version constant -> the only reset
+// path is _shadow_atlas_invalidate_shadow, i.e. slot reassignment).
+//   kept       = light kept its slot, no realloc (the GOOD outcome; cache survives)
+//   realloc    = should_realloc true: subdivision MISMATCH -> resize (per-slot cache can't help; thrash)
+//   no_owner   = light had NO slot at entry (evicted / first-assign -> atlas oversubscription)
+//   found_new  = got a (re)assigned slot via find_shadow -> invalidate fired
+//   find_fail  = no slot available at all (severe oversubscription)
+//   inval      = total _shadow_atlas_invalidate_shadow calls
+//   inval_free = invalidates that freed a REAL cached static_fb (actual cache destructions; ~= sc_re)
+uint32_t g_atlas_kept = 0;
+uint32_t g_atlas_should_realloc = 0;
+uint32_t g_atlas_no_owner = 0;
+uint32_t g_atlas_found_new = 0;
+uint32_t g_atlas_find_failed = 0;
+uint32_t g_atlas_invalidate = 0;
+uint32_t g_atlas_inval_freed_static = 0;
+
 bool LightStorage::shadow_atlas_update_light(RID p_atlas, RID p_light_instance, float p_coverage, uint64_t p_light_version) {
 	ShadowAtlas *shadow_atlas = shadow_atlas_owner.get_or_null(p_atlas);
 	ERR_FAIL_NULL_V(shadow_atlas, false);
@@ -2650,12 +2687,18 @@ bool LightStorage::shadow_atlas_update_light(RID p_atlas, RID p_light_instance, 
 		should_redraw = shadow_atlas->quadrants[old_quadrant].shadows[old_shadow].version != p_light_version;
 
 		if (!should_realloc) {
+			g_atlas_kept++; // DIAGNOSTIC: slot kept, cache preserved (good outcome)
 			shadow_atlas->quadrants[old_quadrant].shadows.write[old_shadow].version = p_light_version;
 			//already existing, see if it should redraw or it's just OK
 			return should_redraw;
 		}
 
+		g_atlas_should_realloc++; // DIAGNOSTIC: subdivision mismatch -> realloc (resize thrash)
 		old_subdivision = shadow_atlas->quadrants[old_quadrant].subdivision;
+	}
+
+	if (old_key == SHADOW_INVALID) {
+		g_atlas_no_owner++; // DIAGNOSTIC: no prior slot (evicted / first-assign -> oversubscription)
 	}
 
 	bool is_omni = li->light_type == RSE::LIGHT_OMNI;
@@ -2670,6 +2713,7 @@ bool LightStorage::shadow_atlas_update_light(RID p_atlas, RID p_light_instance, 
 	}
 
 	if (found_shadow) {
+		g_atlas_found_new++; // DIAGNOSTIC: (re)assigned to a slot -> invalidate fires below
 		if (old_quadrant != SHADOW_INVALID) {
 			shadow_atlas->quadrants[old_quadrant].shadows.write[old_shadow].version = 0;
 			shadow_atlas->quadrants[old_quadrant].shadows.write[old_shadow].owner = RID();
@@ -2710,10 +2754,12 @@ bool LightStorage::shadow_atlas_update_light(RID p_atlas, RID p_light_instance, 
 		return true;
 	}
 
+	g_atlas_find_failed++; // DIAGNOSTIC: no slot available at all (severe oversubscription)
 	return should_redraw;
 }
 
 void LightStorage::_shadow_atlas_invalidate_shadow(ShadowAtlas::Quadrant::Shadow *p_shadow, RID p_atlas, ShadowAtlas *p_shadow_atlas, uint32_t p_quadrant, uint32_t p_shadow_idx) {
+	g_atlas_invalidate++; // DIAGNOSTIC
 	if (p_shadow->owner.is_valid()) {
 		LightInstance *sli = light_instance_owner.get_or_null(p_shadow->owner);
 		uint32_t old_key = p_shadow_atlas->shadow_owners[p_shadow->owner];
@@ -2736,6 +2782,7 @@ void LightStorage::_shadow_atlas_invalidate_shadow(ShadowAtlas::Quadrant::Shadow
 	// (or an old slot size). Free it + force a re-render, so a reassigned/resized slot never
 	// texture_copies a stale static depth into the atlas — that's the source of phantom shadows.
 	if (p_shadow->static_fb.is_valid()) {
+		g_atlas_inval_freed_static++; // DIAGNOSTIC: destroyed a REAL cached static depth
 		RD::get_singleton()->free_rid(p_shadow->static_fb);
 		p_shadow->static_fb = RID();
 	}
@@ -2782,6 +2829,7 @@ RID LightStorage::shadow_atlas_get_cached_static_fb(RID p_atlas, RID p_light_ins
 	}
 	ShadowAtlas::Quadrant::Shadow &slot = atlas->quadrants[quadrant].shadows.write[shadow];
 	if (slot.static_fb.is_null()) {
+		g_static_fb_alloc++; // DIAGNOSTIC: fresh static_fb alloc this frame (means it was freed/recreated)
 		RD::TextureFormat tf;
 		tf.format = get_shadow_atlas_depth_format(atlas->use_16_bits);
 		tf.width = slot_size;
@@ -2811,7 +2859,7 @@ RID LightStorage::shadow_atlas_get_cached_static_depth(RID p_atlas, RID p_light_
 	return atlas->quadrants[quadrant].shadows[shadow].static_depth;
 }
 
-bool LightStorage::shadow_atlas_cached_static_take_dirty(RID p_atlas, RID p_light_instance, uint64_t p_static_version) {
+bool LightStorage::shadow_atlas_cached_static_take_dirty(RID p_atlas, RID p_light_instance, uint64_t p_static_version, bool p_commit) {
 	ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
 	ERR_FAIL_NULL_V(atlas, false);
 	if (!atlas->shadow_owners.has(p_light_instance)) {
@@ -2825,10 +2873,38 @@ bool LightStorage::shadow_atlas_cached_static_take_dirty(RID p_atlas, RID p_ligh
 	}
 	ShadowAtlas::Quadrant::Shadow &slot = atlas->quadrants[quadrant].shadows.write[shadow];
 	if (slot.cached_static_version != p_static_version) {
-		slot.cached_static_version = p_static_version;
+		// p_commit=false is a PEEK (rebuild budget): report dirty without consuming, so a deferred
+		// light stays dirty and retries next frame instead of caching a not-yet-rendered version.
+		if (p_commit) {
+			// DIAGNOSTIC: bucket WHY we mismatched, before overwriting.
+			if (slot.cached_static_version == UINT64_MAX) {
+				g_takedirty_cached_max++;
+			} else {
+				g_takedirty_cached_stale++;
+				g_td_last_p = p_static_version;             // RUN 10: what key did the renderer hand in?
+				g_td_last_cached = slot.cached_static_version; // RUN 10: what was cached?
+			}
+			slot.cached_static_version = p_static_version;
+		}
 		return true;
 	}
 	return false;
+}
+
+// True if this light's slot has never had its static depth rendered (must build regardless of budget).
+bool LightStorage::shadow_atlas_cached_static_unbuilt(RID p_atlas, RID p_light_instance) {
+	ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
+	ERR_FAIL_NULL_V(atlas, true);
+	if (!atlas->shadow_owners.has(p_light_instance)) {
+		return true;
+	}
+	uint32_t key = atlas->shadow_owners[p_light_instance];
+	uint32_t quadrant = (key >> QUADRANT_SHIFT) & 0x3;
+	uint32_t shadow = key & SHADOW_INDEX_MASK;
+	if (shadow >= (uint32_t)atlas->quadrants[quadrant].shadows.size()) {
+		return true;
+	}
+	return atlas->quadrants[quadrant].shadows[shadow].cached_static_version == UINT64_MAX;
 }
 
 /* DIRECTIONAL SHADOW */
