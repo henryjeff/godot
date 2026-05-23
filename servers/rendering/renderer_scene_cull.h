@@ -624,6 +624,11 @@ public:
 		HashSet<Instance *> lights;
 		bool can_cast_shadows;
 		bool can_cast_static_shadows;
+		// Cached-shadow self-heal (runtime only, never serialized): a caster authored
+		// static_shadow_caster=true but observed to actually move is demoted to dynamic ONCE, so it
+		// drops out of the per-light cached static set instead of re-dirtying it every frame ("one bad
+		// apple" fix). Reset implicitly: this struct is recreated on instance_set_base / instance free.
+		bool auto_demoted_dynamic = false;
 		bool material_is_animated;
 		uint32_t projector_count = 0;
 		uint32_t softshadow_count = 0;
@@ -700,6 +705,13 @@ public:
 		// Cached-spot render gate (P3 approach B): the static_version at the light's last shadow
 		// render. Init to a sentinel so the first frame always renders. Redraw iff != static_version.
 		uint64_t last_rendered_static_version = UINT64_MAX;
+		// Cached-shadow light-movement gate: a spot that moves beyond a threshold falls back to the
+		// cheap stock per-frame shadow path (a moving light's cached static depth is in the wrong
+		// projection, and a cached MISS is more expensive than the stock tight-culled render). Re-caches
+		// once it has been still for a cooldown. Tracked here because LightInstance has no prev-transform.
+		Transform3D last_cached_transform;
+		bool light_transform_initialized = false;
+		uint32_t last_light_move_frame_id = 0;
 		List<Instance *>::Element *D; // directional light in scenario
 
 		bool uses_projector = false;
@@ -757,6 +769,13 @@ public:
 		// Shadow updates can either full (everything in the shadow volume)
 		// or closely culled to the camera frustum.
 		bool is_shadow_update_full() const { return shadow_dirty_count == 0; }
+		bool intersects_multiple_cameras() const { return light_intersects_multiple_cameras; } // DIAGNOSTIC accessor
+		// Cached-shadow light-movement gate: a light NOT yet observed moving (uninitialized — e.g. a
+		// still spot whose transform hasn't been touched since the cache was toggled on) defaults to
+		// CACHEABLE. Only a light seen moving within the last p_cooldown frames is blocked.
+		bool is_light_cacheable(uint32_t p_frame_id, uint32_t p_cooldown) const {
+			return !light_transform_initialized || (p_frame_id - last_light_move_frame_id >= p_cooldown);
+		}
 
 		InstanceLightData() {
 			bake_mode = RS::LIGHT_BAKE_DISABLED;
@@ -1077,6 +1096,10 @@ public:
 	virtual Variant instance_geometry_get_shader_parameter(RID p_instance, const StringName &p_parameter) const;
 	virtual Variant instance_geometry_get_shader_parameter_default_value(RID p_instance, const StringName &p_parameter) const;
 
+	// Cached-static-shadow debug: read the runtime self-heal bit so tooling can tint
+	// a caster the engine auto-demoted (was tagged static, detected moving) vs authored tag.
+	virtual bool instance_geometry_get_auto_demoted(RID p_instance) const;
+
 	virtual void mesh_generate_pipelines(RID p_mesh, bool p_background_compilation);
 	virtual uint32_t get_pipeline_compilations(RS::PipelineSource p_source);
 
@@ -1088,7 +1111,7 @@ public:
 
 	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect);
 
-	_FORCE_INLINE_ bool _light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers = 0xFFFFFF);
+	_FORCE_INLINE_ bool _light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers = 0xFFFFFF, bool p_cache_eligible = false);
 
 	RID _render_get_environment(RID p_camera, RID p_scenario);
 	RID _render_get_compositor(RID p_camera, RID p_scenario);

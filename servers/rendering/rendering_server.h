@@ -1112,6 +1112,11 @@ public:
 		VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME,
 		VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME,
 		VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME,
+		// Cached static spot-shadow stats (filled under VIEWPORT_RENDER_INFO_TYPE_SHADOW). Appended
+		// before _MAX so existing indices are unchanged.
+		VIEWPORT_RENDER_INFO_SHADOW_CACHE_HITS,
+		VIEWPORT_RENDER_INFO_SHADOW_CACHE_MISSES,
+		VIEWPORT_RENDER_INFO_SHADOW_CACHE_REBUILDS,
 		VIEWPORT_RENDER_INFO_MAX,
 	};
 
@@ -1518,6 +1523,10 @@ public:
 	virtual Variant instance_geometry_get_shader_parameter(RID p_instance, const StringName &) const = 0;
 	virtual Variant instance_geometry_get_shader_parameter_default_value(RID p_instance, const StringName &) const = 0;
 	virtual void instance_geometry_get_shader_parameter_list(RID p_instance, List<PropertyInfo> *p_parameters) const = 0;
+
+	// Cached-static-shadow debug: expose the runtime self-heal bit (was tagged static, detected
+	// moving → auto-demoted to dynamic) so the shadow-cache panel can tint such casters distinctly.
+	virtual bool instance_geometry_get_auto_demoted(RID p_instance) const = 0;
 
 	/* Bake 3D objects */
 

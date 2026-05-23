@@ -48,6 +48,12 @@
 #include "core/string/string_name.h"
 
 #define TRACY_ENABLE
+// On-demand: the client doesn't collect/buffer until a profiler connects, and supports a
+// consumer connecting / disconnecting / reconnecting within one run. Lets the in-game
+// "Capture" button (tracy-capture) attach after the GUI has detached, and keeps captures
+// focused (no unbounded backlog). Must match the define on TracyClient.cpp (see SCsub) — an
+// inconsistent define across Tracy TUs is an ODR violation.
+#define TRACY_ON_DEMAND
 
 #include <tracy/Tracy.hpp>
 

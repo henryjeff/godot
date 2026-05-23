@@ -2566,6 +2566,16 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 	}
 }
 
+// DIAGNOSTIC (cached-spot shadow): per-viewport outcome counters for the cache. Read+reset in
+// renderer_viewport.cpp's "render viewport" ZoneText. miss_fb = cached fb invalid -> full untight
+// static render every frame (slot reshuffle/never-allocated, "H2"); rerender = static_version
+// changed -> static set re-rendered into cache ("H1"); hit = cheap path (only dynamic overlay+copy).
+uint32_t g_shadow_cache_miss_fb = 0;
+uint32_t g_shadow_cache_rerender = 0;
+uint32_t g_shadow_cache_hit = 0;
+// Per-frame rebuild budget counter (reset at the top of RendererViewport::draw_viewports).
+uint32_t g_static_rebuilds_this_frame = 0;
+
 void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas, int p_pass, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RenderGeometryInstance *> *p_dynamic_instances, bool p_cache_static_spot, uint64_t p_cache_static_version, float p_lod_distance_multiplier, float p_screen_mesh_lod_threshold, bool p_open_pass, bool p_close_pass, bool p_clear_region, RenderingMethod::RenderInfo *p_render_info, const Size2i &p_viewport_size, const Transform3D &p_main_cam_transform) {
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 
@@ -2753,8 +2763,26 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 		RID cached_fb = light_storage->shadow_atlas_get_cached_static_fb(p_shadow_atlas, p_light);
 		RID cached_depth = light_storage->shadow_atlas_get_cached_static_depth(p_shadow_atlas, p_light);
 		if (cached_fb.is_valid() && cached_depth.is_valid()) {
-			if (light_storage->shadow_atlas_cached_static_take_dirty(p_shadow_atlas, p_light, p_cache_static_version)) {
-				_render_shadow_append(cached_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2i(), flip_y, true, false, false, p_render_info, p_viewport_size, p_main_cam_transform);
+			// PEEK whether the static depth is stale (don't consume yet — the per-frame rebuild budget
+			// may defer it).
+			if (light_storage->shadow_atlas_cached_static_take_dirty(p_shadow_atlas, p_light, p_cache_static_version, false)) {
+				// Rebuild budget: cap static re-renders per frame so a burst (many lights' static sets
+				// change at once) spreads over frames. budget <= 0 = unlimited (default). A never-built
+				// slot MUST render now (no cache to reuse); an already-built slot may be deferred (reuse
+				// stale depth one more frame, retry next frame).
+				extern uint32_t g_static_rebuilds_this_frame;
+				const int __budget = GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_max_rebuilds_per_frame");
+				const bool __unbuilt = light_storage->shadow_atlas_cached_static_unbuilt(p_shadow_atlas, p_light);
+				const bool __defer = !__unbuilt && __budget > 0 && (int)g_static_rebuilds_this_frame >= __budget;
+				if (!__defer) {
+					light_storage->shadow_atlas_cached_static_take_dirty(p_shadow_atlas, p_light, p_cache_static_version, true); // commit (consume the dirty)
+					g_static_rebuilds_this_frame++;
+					g_shadow_cache_rerender++; // DIAGNOSTIC: static_version changed -> full static re-render
+					_render_shadow_append(cached_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2i(), flip_y, true, false, false, p_render_info, p_viewport_size, p_main_cam_transform);
+				}
+				// else deferred: reuse the (stale) cached depth via the texture_copy below; stays dirty.
+			} else {
+				g_shadow_cache_hit++; // DIAGNOSTIC: cache hit -> only dynamic overlay + texture_copy
 			}
 			const PagedArray<RenderGeometryInstance *> &dyn = p_dynamic_instances ? *p_dynamic_instances : p_instances;
 			_render_shadow_append(render_fb, dyn, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, false, false, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
@@ -2764,6 +2792,7 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 				dyn_pass.copy_dst = light_storage->shadow_atlas_get_texture(p_shadow_atlas);
 			}
 		} else {
+			g_shadow_cache_miss_fb++; // DIAGNOSTIC: cached fb/depth invalid -> full untight static render (H2)
 			_render_shadow_append(render_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, using_dual_paraboloid, using_dual_paraboloid_flip, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, p_clear_region, p_open_pass, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
 		}
 	} else {

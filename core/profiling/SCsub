@@ -58,7 +58,11 @@ if env["profiler"]:
         env.Prepend(CPPPATH=[str(profiler_path.absolute())])
 
         env_tracy = env.Clone()
-        env_tracy.Append(CPPDEFINES=["TRACY_ENABLE"])
+        # TRACY_ON_DEMAND must match the define in core/profiling/profiling.h (every Tracy
+        # TU must agree, or it's an ODR violation). On-demand lets a consumer connect/
+        # disconnect/reconnect (so the in-game capture button works after the GUI detaches)
+        # and only records while connected.
+        env_tracy.Append(CPPDEFINES=["TRACY_ENABLE", "TRACY_ON_DEMAND"])
         if env["profiler_sample_callstack"]:
             if env["platform"] not in ("windows", "linuxbsd", "android"):
                 # Reference the feature matrix in the tracy documentation.

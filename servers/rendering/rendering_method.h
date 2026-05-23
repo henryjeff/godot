@@ -116,6 +116,8 @@ public:
 	virtual void instance_geometry_get_shader_parameter_list(RID p_instance, List<PropertyInfo> *p_parameters) const = 0;
 	virtual Variant instance_geometry_get_shader_parameter(RID p_instance, const StringName &p_parameter) const = 0;
 	virtual Variant instance_geometry_get_shader_parameter_default_value(RID p_instance, const StringName &p_parameter) const = 0;
+	// Cached-static-shadow debug: runtime self-heal bit (auto-demoted static caster), for tooling tint.
+	virtual bool instance_geometry_get_auto_demoted(RID p_instance) const = 0;
 
 	/* PIPELINES */
 
