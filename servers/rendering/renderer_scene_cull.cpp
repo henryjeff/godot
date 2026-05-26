@@ -1374,6 +1374,14 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 			if ((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK && instance->base_data) {
 				InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 				geom->can_cast_static_shadows = p_enabled;
+				// Game-authoritative re-promote: an explicit "this is static now" (e.g. a PhysicsObject
+				// returning to STORED) clears the runtime self-heal latch, so a caster auto-demoted while
+				// moving is eligible to cache again. The original mis-tag case is unaffected (those casters
+				// are tagged static once at load and never re-set, so their latch persists). Only re-enabling
+				// clears it; disabling leaves it, since it's about to be dynamic anyway.
+				if (p_enabled) {
+					geom->auto_demoted_dynamic = false;
+				}
 				// The static caster set changed for every paired light, so invalidate their cached
 				// static depth — else promoting a settled item to static (or back) at runtime leaves
 				// a stale cached depth -> phantom shadows.
