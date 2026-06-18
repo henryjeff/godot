@@ -1564,6 +1564,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			for (const int &index : p_render_data->cube_shadows) {
 				_render_shadow_pass(p_render_data->render_shadows[index].light, p_render_data->shadow_atlas, p_render_data->render_shadows[index].pass, p_render_data->render_shadows[index].instances, &p_render_data->render_shadows[index].dynamic_instances, p_render_data->render_shadows[index].cache_static_spot, p_render_data->render_shadows[index].cache_static_version, lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, true, true, true, p_render_data->render_info, viewport_size, p_render_data->scene_data->cam_transform);
 			}
+		}
 
 		if (p_render_data->directional_shadows.size()) {
 			//open the pass for directional shadows
