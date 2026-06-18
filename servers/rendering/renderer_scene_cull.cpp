@@ -1371,8 +1371,8 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 				}
 			}
 		} break;
-		case RS::INSTANCE_FLAG_STATIC_SHADOW_CASTER: {
-			if ((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK && instance->base_data) {
+		case RSE::INSTANCE_FLAG_STATIC_SHADOW_CASTER: {
+			if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
 				InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 				geom->can_cast_static_shadows = p_enabled;
 				// Game-authoritative re-promote: an explicit "this is static now" (e.g. a PhysicsObject
@@ -1670,7 +1670,7 @@ Variant RendererSceneCull::instance_geometry_get_shader_parameter(RID p_instance
 bool RendererSceneCull::instance_geometry_get_auto_demoted(RID p_instance) const {
 	const Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL_V(instance, false);
-	if (!((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !instance->base_data) {
+	if (!((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !instance->base_data) {
 		return false;
 	}
 	const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(instance->base_data);
@@ -1854,8 +1854,8 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 				// RUN 13: WHAT KIND of object churns? MULTIMESH = POM dormant; MESH = regular mesh
 				// (shelf/prop/skinned char); other = particles/etc. + is it skinned (skeleton-driven)?
 				switch (p_instance->base_type) {
-					case RS::INSTANCE_MULTIMESH: g_churn_mmi++; break;
-					case RS::INSTANCE_MESH: g_churn_mesh++; break;
+					case RSE::INSTANCE_MULTIMESH: g_churn_mmi++; break;
+					case RSE::INSTANCE_MESH: g_churn_mesh++; break;
 					default: g_churn_other++; break;
 				}
 				if (p_instance->skeleton.is_valid()) { g_churn_skinned++; }
@@ -3817,7 +3817,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// Screen-coverage gate: skip caching for spots smaller than min_coverage (default 0 = no gate)
 			// so off-screen / tiny lights take the stock path instead of paying a camera-independent miss.
 			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows")
-					&& RSG::light_storage->light_get_type(ins->base) == RS::LIGHT_SPOT
+					&& RSG::light_storage->light_get_type(ins->base) == RSE::LIGHT_SPOT
 					&& light->is_light_cacheable(Engine::get_singleton()->get_frames_drawn(), (uint32_t)GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_light_still_cooldown_frames"))
 					&& coverage >= (real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_min_coverage");
 
