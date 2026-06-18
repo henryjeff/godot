@@ -516,7 +516,7 @@ bool GeometryInstance3D::is_ignoring_occlusion_culling() {
 
 void GeometryInstance3D::set_static_shadow_caster(bool p_enabled) {
 	static_shadow_caster = p_enabled;
-	RS::get_singleton()->instance_geometry_set_flag(get_instance(), RS::INSTANCE_FLAG_STATIC_SHADOW_CASTER, static_shadow_caster);
+	RS::get_singleton()->instance_geometry_set_flag(get_instance(), RSE::INSTANCE_FLAG_STATIC_SHADOW_CASTER, static_shadow_caster);
 }
 
 bool GeometryInstance3D::is_static_shadow_caster() const {
