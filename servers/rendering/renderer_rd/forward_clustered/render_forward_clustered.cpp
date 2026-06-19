@@ -2803,7 +2803,7 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 			// DEBUG isolate view: static-only (1) or dynamic-only (2) -> render just that caster set
 			// into the slot (clear, no cache/overlay) so toggling reveals which shadows are which.
 			const PagedArray<RenderGeometryInstance *> &dbg = (cache_debug == 2 && p_dynamic_instances) ? *p_dynamic_instances : p_instances;
-			_render_shadow_append(render_fb, dbg, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, true, p_open_pass, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
+			_render_shadow_append(render_fb, dbg, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, using_dual_paraboloid, using_dual_paraboloid_flip, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, true, p_open_pass, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
 			return;
 		}
 		// Approach A overlay: render the static set into the per-slot cached depth (only when its
@@ -2828,14 +2828,14 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 					light_storage->shadow_atlas_cached_static_take_dirty(p_shadow_atlas, p_light, p_cache_static_version, true); // commit (consume the dirty)
 					g_static_rebuilds_this_frame++;
 					g_shadow_cache_rerender++; // DIAGNOSTIC: static_version changed -> full static re-render
-					_render_shadow_append(cached_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2i(), flip_y, true, false, false, p_render_info, p_viewport_size, p_main_cam_transform);
+					_render_shadow_append(cached_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, using_dual_paraboloid, using_dual_paraboloid_flip, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2i(), flip_y, true, false, false, p_render_info, p_viewport_size, p_main_cam_transform);
 				}
 				// else deferred: reuse the (stale) cached depth via the texture_copy below; stays dirty.
 			} else {
 				g_shadow_cache_hit++; // DIAGNOSTIC: cache hit -> only dynamic overlay + texture_copy
 			}
 			const PagedArray<RenderGeometryInstance *> &dyn = p_dynamic_instances ? *p_dynamic_instances : p_instances;
-			_render_shadow_append(render_fb, dyn, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, false, false, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
+			_render_shadow_append(render_fb, dyn, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, using_dual_paraboloid, using_dual_paraboloid_flip, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, false, false, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
 			if (scene_state.shadow_passes.size() > 0) {
 				SceneState::ShadowPass &dyn_pass = scene_state.shadow_passes[scene_state.shadow_passes.size() - 1];
 				dyn_pass.copy_src = cached_depth;
