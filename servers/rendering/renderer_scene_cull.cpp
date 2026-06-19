@@ -1727,7 +1727,8 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		// Cached-shadow LIGHT-MOVEMENT GATE: record beyond-threshold spot movement so the cull can route
 		// a moving spot to the cheap stock path (a moving light's cached static depth is in the wrong
 		// projection; a cached MISS costs more than the stock tight-culled render). Re-caches once still.
-		if (GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && RSG::light_storage->light_get_type(p_instance->base) == RSE::LIGHT_SPOT) {
+		const RSE::LightType __mv_type = RSG::light_storage->light_get_type(p_instance->base);
+		if (GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && (__mv_type == RSE::LIGHT_SPOT || __mv_type == RSE::LIGHT_AREA)) {
 			if (!light->light_transform_initialized) {
 				light->last_cached_transform = *instance_xform;
 				light->light_transform_initialized = true;
@@ -2816,6 +2817,11 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			real_t radius = RSG::light_storage->light_get_param(p_instance->base, RSE::LIGHT_PARAM_RANGE);
 			Vector2 half_size = RSG::light_storage->light_area_get_size(p_instance->base) / 2.0;
 
+			// A cached area light renders ONLY static casters; dynamic casters are excluded and overlaid
+			// per-frame (same single-pass positional shadow as a spot). p_cache_eligible was computed by
+			// the cull gate (setting + SPOT|AREA + light-movement + coverage), so the split and gate agree.
+			const bool cache_static_area = p_cache_eligible;
+
 			real_t z = -1;
 			Vector<Plane> planes;
 			planes.resize(6);
@@ -2865,7 +2871,14 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 					}
 				}
 
-				shadow_data.instances.push_back(static_cast<InstanceGeometryData *>(instance->base_data)->geometry_instance);
+				// Approach A split: a cached area light caches STATIC casters (instances) and overlays
+				// DYNAMIC casters per-frame (dynamic_instances), exactly like the spot case above.
+				InstanceGeometryData *area_geom = static_cast<InstanceGeometryData *>(instance->base_data);
+				if (cache_static_area && (!area_geom->can_cast_static_shadows || area_geom->auto_demoted_dynamic)) {
+					shadow_data.dynamic_instances.push_back(area_geom->geometry_instance);
+				} else {
+					shadow_data.instances.push_back(area_geom->geometry_instance);
+				}
 			}
 
 			RSG::mesh_storage->update_mesh_instances();
@@ -2873,6 +2886,8 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			RSG::light_storage->light_instance_set_shadow_transform(light->instance, Projection(), light_transform, radius, 0, 0, 0);
 			shadow_data.light = light->instance;
 			shadow_data.pass = 0;
+			shadow_data.cache_static_spot = cache_static_area;
+			shadow_data.cache_static_version = light->static_version;
 		}
 	}
 
@@ -3823,8 +3838,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// moved recently is not cacheable -> falls through to the stock dirty-gated path below.
 			// Screen-coverage gate: skip caching for spots smaller than min_coverage (default 0 = no gate)
 			// so off-screen / tiny lights take the stock path instead of paying a camera-independent miss.
+			// Cache covers single-pass POSITIONAL shadows (spot + area). Omni renders multi-pass
+			// cube/paraboloid into the slot and is deliberately excluded (legacy per-frame path).
+			const RSE::LightType __cache_type = RSG::light_storage->light_get_type(ins->base);
 			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows")
-					&& RSG::light_storage->light_get_type(ins->base) == RSE::LIGHT_SPOT
+					&& (__cache_type == RSE::LIGHT_SPOT || __cache_type == RSE::LIGHT_AREA)
 					&& light->is_light_cacheable(Engine::get_singleton()->get_frames_drawn(), (uint32_t)GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_light_still_cooldown_frames"))
 					&& coverage >= (real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_min_coverage");
 
