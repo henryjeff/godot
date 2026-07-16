@@ -109,6 +109,9 @@ public:
 	int send(uint8_t p_channel, ENetPacket *p_packet);
 	void throttle_configure(int interval, int acceleration, int deceleration);
 	void set_timeout(int p_timeout, int p_timeout_min, int p_timeout_max);
+	// Fridge dev-only: route this peer's datagrams through the socket-layer
+	// network-condition simulator (rtt is full round-trip ms). All-zero clears.
+	void set_network_simulation(double p_rtt_ms, double p_jitter_ms, double p_loss);
 	double get_statistic(PeerStatistic p_stat);
 	PeerState get_state() const;
 	int get_channels() const;
