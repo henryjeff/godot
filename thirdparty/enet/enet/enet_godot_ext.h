@@ -52,4 +52,16 @@ ENET_API void enet_host_refuse_new_connections (ENetHost *, int);
 ENET_API void enet_peer_socket_bind (ENetPeer *);
 ENET_API void enet_peer_socket_destroy (ENetPeer *);
 
+/* Fridge dev-only network-condition simulator (latency / jitter / loss).
+   Injected at the Godot socket layer (enet_godot.cpp) so ENet's own RTT
+   estimation, retransmission and throttle react to the simulated link the
+   same way they would on a real WAN. Keyed by peer address (host[16]+port):
+   on a listen server every client funnels through the one host socket, so
+   per-client config + symmetric (send+recv) delay yields a faithful RTT with
+   all simulation living on the host. rtt_ms is full round-trip; the simulator
+   applies rtt_ms/2 on each crossing. Passing rtt/jitter/loss all <= 0 clears
+   the entry; with no entries the socket path is byte-for-byte the original. */
+ENET_API void enet_godot_net_sim_set (const uint8_t * host, uint16_t port, float rtt_ms, float jitter_ms, float loss);
+ENET_API void enet_godot_net_sim_clear_all (void);
+
 #endif // __ENET_GODOT_EXT_H__

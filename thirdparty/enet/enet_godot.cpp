@@ -38,7 +38,12 @@
 #include "core/io/net_socket.h"
 #include "core/io/packet_peer_dtls.h"
 #include "core/io/udp_server.h"
+#include "core/math/math_funcs.h"
 #include "core/os/os.h"
+#include "core/string/ustring.h"
+#include "core/templates/hash_map.h"
+#include "core/templates/list.h"
+#include "core/templates/vector.h"
 
 // This must be last for windows to compile (tested with MinGW)
 #include "enet/enet.h"
@@ -581,6 +586,95 @@ void enet_socket_destroy(ENetSocket socket) {
 	memdelete(sock);
 }
 
+// ===========================================================================
+// Fridge dev-only network-condition simulator (latency / jitter / loss).
+//
+// Sits at the Godot socket boundary so ENet sees the simulated link exactly
+// as it would a real one: delayed datagrams produce delayed ACKs, so ENet's
+// RTT estimate, retransmission timers and throttle all respond faithfully.
+// Inactive (no configured peers, empty queues) => the original socket path
+// runs unchanged with zero added work. See enet_godot_ext.h for the contract.
+// ===========================================================================
+
+struct NetSimConfig {
+	float one_way_ms = 0.0f; // half of the configured round-trip
+	float jitter_ms = 0.0f; // +/- uniform variation on each crossing
+	float loss = 0.0f; // [0,1] per-datagram drop probability
+};
+
+struct NetSimPacket {
+	Vector<uint8_t> data;
+	uint8_t host[16] = {};
+	uint16_t port = 0;
+	uint64_t due_ms = 0;
+};
+
+class NetworkSim {
+public:
+	HashMap<String, NetSimConfig> configs; // keyed by peer address
+	List<NetSimPacket> in_queue; // delayed inbound, withheld from ENet until due
+	List<NetSimPacket> out_queue; // delayed outbound, withheld from the wire until due
+
+	_FORCE_INLINE_ bool active() const {
+		return !configs.is_empty() || !in_queue.is_empty() || !out_queue.is_empty();
+	}
+
+	static String key(const uint8_t *p_host, uint16_t p_port) {
+		IPAddress ip;
+		ip.set_ipv6((uint8_t *)p_host);
+		return String(ip) + ":" + itos(p_port);
+	}
+
+	const NetSimConfig *find(const uint8_t *p_host, uint16_t p_port) const {
+		return configs.getptr(key(p_host, p_port));
+	}
+};
+
+// Created lazily on first configuration and intentionally never freed: tearing
+// down Godot containers during process exit would race the allocator shutdown.
+static NetworkSim *_net_sim = nullptr;
+
+static NetworkSim *_net_sim_get() {
+	if (_net_sim == nullptr) {
+		_net_sim = memnew(NetworkSim);
+	}
+	return _net_sim;
+}
+
+// Fast-path gate: nullptr (the common case) means "simulator idle, run original".
+static _FORCE_INLINE_ NetworkSim *_net_sim_active() {
+	return (_net_sim != nullptr && _net_sim->active()) ? _net_sim : nullptr;
+}
+
+static uint64_t _net_sim_due(const NetSimConfig *p_cfg) {
+	double delay = p_cfg->one_way_ms;
+	if (p_cfg->jitter_ms > 0.0f) {
+		delay += Math::random(-(double)p_cfg->jitter_ms, (double)p_cfg->jitter_ms);
+	}
+	if (delay < 0.0) {
+		delay = 0.0;
+	}
+	return OS::get_singleton()->get_ticks_msec() + (uint64_t)delay;
+}
+
+// Push any outbound datagrams whose hold time has elapsed onto the real socket.
+static void _net_sim_flush_outbound(NetworkSim *p_sim, ENetGodotSocket *p_sock) {
+	const uint64_t now = OS::get_singleton()->get_ticks_msec();
+	List<NetSimPacket>::Element *E = p_sim->out_queue.front();
+	while (E) {
+		List<NetSimPacket>::Element *next = E->next();
+		NetSimPacket &p = E->get();
+		if (p.due_ms <= now) {
+			IPAddress ip;
+			ip.set_ipv6(p.host);
+			int sent = 0;
+			p_sock->sendto(p.data.ptr(), p.data.size(), sent, ip, p.port);
+			p_sim->out_queue.erase(E);
+		}
+		E = next;
+	}
+}
+
 int enet_socket_send(ENetSocket socket, const ENetAddress *address, const ENetBuffer *buffers, size_t bufferCount) {
 	ERR_FAIL_NULL_V(address, -1);
 
@@ -607,6 +701,28 @@ int enet_socket_send(ENetSocket socket, const ENetAddress *address, const ENetBu
 		pos += buffers[i].dataLength;
 	}
 
+	NetworkSim *sim = _net_sim_active();
+	if (sim) {
+		_net_sim_flush_outbound(sim, sock);
+		const NetSimConfig *cfg = sim->find(address->host, address->port);
+		if (cfg) {
+			// Report the datagram as fully sent regardless: a dropped/delayed
+			// packet must look "on the wire" to ENet so it waits for the ACK
+			// and retransmits on its own schedule.
+			if (cfg->loss > 0.0f && Math::randf() < cfg->loss) {
+				return size;
+			}
+			NetSimPacket p;
+			p.data = out;
+			memcpy(p.host, address->host, 16);
+			p.port = address->port;
+			p.due_ms = _net_sim_due(cfg);
+			sim->out_queue.push_back(p);
+			return size;
+		}
+		// Peer not simulated: fall through to an immediate send.
+	}
+
 	int sent = 0;
 	err = sock->sendto((const uint8_t *)&w[0], size, sent, dest, address->port);
 	if (err != OK) {
@@ -626,25 +742,105 @@ int enet_socket_receive(ENetSocket socket, ENetAddress *address, ENetBuffer *buf
 
 	ENetGodotSocket *sock = (ENetGodotSocket *)socket;
 
-	int read;
-	IPAddress ip;
+	NetworkSim *sim = _net_sim_active();
+	if (!sim) {
+		// Original fast path.
+		int read;
+		IPAddress ip;
 
-	Error err = sock->recvfrom((uint8_t *)buffers[0].data, buffers[0].dataLength, read, ip, address->port);
-	if (err == ERR_BUSY) {
-		return 0;
+		Error err = sock->recvfrom((uint8_t *)buffers[0].data, buffers[0].dataLength, read, ip, address->port);
+		if (err == ERR_BUSY) {
+			return 0;
+		}
+		if (err == ERR_OUT_OF_MEMORY) {
+			// A packet above the ENET_PROTOCOL_MAXIMUM_MTU was received.
+			return -2;
+		}
+
+		if (err != OK) {
+			return -1;
+		}
+
+		enet_address_set_ip(address, ip.get_ipv6(), 16);
+
+		return read;
 	}
-	if (err == ERR_OUT_OF_MEMORY) {
-		// A packet above the ENET_PROTOCOL_MAXIMUM_MTU was received.
-		return -2;
+
+	// Simulated path. ENet polls receive in a loop until it returns 0, so we
+	// give queued outbound a flush opportunity every tick, drain the real
+	// socket into the delay queue (delivering unsimulated peers immediately),
+	// then hand back one inbound datagram that has come due.
+	_net_sim_flush_outbound(sim, sock);
+
+	while (true) {
+		int read = 0;
+		IPAddress ip;
+		uint16_t src_port = 0;
+		Error err = sock->recvfrom((uint8_t *)buffers[0].data, buffers[0].dataLength, read, ip, src_port);
+		if (err != OK) {
+			// ERR_BUSY (socket drained), ERR_OUT_OF_MEMORY, or a real error.
+			break;
+		}
+		const NetSimConfig *cfg = sim->find(ip.get_ipv6(), src_port);
+		if (!cfg) {
+			// Unsimulated peer: deliver now (already sitting in buffers[0]).
+			address->port = src_port;
+			enet_address_set_ip(address, ip.get_ipv6(), 16);
+			return read;
+		}
+		if (!(cfg->loss > 0.0f && Math::randf() < cfg->loss)) {
+			NetSimPacket p;
+			p.data.resize(read);
+			memcpy(p.data.ptrw(), buffers[0].data, read);
+			memcpy(p.host, ip.get_ipv6(), 16);
+			p.port = src_port;
+			p.due_ms = _net_sim_due(cfg);
+			sim->in_queue.push_back(p);
+		}
 	}
 
-	if (err != OK) {
-		return -1;
+	const uint64_t now = OS::get_singleton()->get_ticks_msec();
+	List<NetSimPacket>::Element *best = nullptr;
+	for (List<NetSimPacket>::Element *E = sim->in_queue.front(); E; E = E->next()) {
+		if (E->get().due_ms <= now && (best == nullptr || E->get().due_ms < best->get().due_ms)) {
+			best = E;
+		}
+	}
+	if (best) {
+		NetSimPacket &p = best->get();
+		ERR_FAIL_COND_V((int)buffers[0].dataLength < p.data.size(), -2);
+		const int read = p.data.size();
+		memcpy(buffers[0].data, p.data.ptr(), read);
+		address->port = p.port;
+		enet_address_set_ip(address, p.host, 16);
+		sim->in_queue.erase(best);
+		return read;
 	}
 
-	enet_address_set_ip(address, ip.get_ipv6(), 16);
+	return 0;
+}
 
-	return read;
+void enet_godot_net_sim_set(const uint8_t *host, uint16_t port, float rtt_ms, float jitter_ms, float loss) {
+	NetworkSim *sim = _net_sim_get();
+	const String k = NetworkSim::key(host, port);
+	if (rtt_ms <= 0.0f && jitter_ms <= 0.0f && loss <= 0.0f) {
+		sim->configs.erase(k);
+		return;
+	}
+	NetSimConfig cfg;
+	cfg.one_way_ms = rtt_ms * 0.5f;
+	cfg.jitter_ms = jitter_ms;
+	cfg.loss = CLAMP(loss, 0.0f, 1.0f);
+	sim->configs[k] = cfg;
+}
+
+void enet_godot_net_sim_clear_all(void) {
+	if (_net_sim == nullptr) {
+		return;
+	}
+	// Drop configs; let any in-flight queued packets drain so connections that
+	// are mid-handshake when the sim is turned off don't lose datagrams.
+	_net_sim->configs.clear();
 }
 
 int enet_socket_get_address(ENetSocket socket, ENetAddress *address) {

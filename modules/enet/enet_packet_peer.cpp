@@ -82,6 +82,13 @@ void ENetPacketPeer::set_timeout(int p_timeout, int p_timeout_min, int p_timeout
 	enet_peer_timeout(peer, p_timeout, p_timeout_min, p_timeout_max);
 }
 
+void ENetPacketPeer::set_network_simulation(double p_rtt_ms, double p_jitter_ms, double p_loss) {
+	ERR_FAIL_NULL_MSG(peer, "Peer not connected.");
+#ifdef GODOT_ENET
+	enet_godot_net_sim_set(peer->address.host, peer->address.port, (float)p_rtt_ms, (float)p_jitter_ms, (float)p_loss);
+#endif
+}
+
 int ENetPacketPeer::get_max_packet_size() const {
 	return 1 << 24;
 }
@@ -216,6 +223,7 @@ void ENetPacketPeer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("send", "channel", "packet", "flags"), &ENetPacketPeer::_send);
 	ClassDB::bind_method(D_METHOD("throttle_configure", "interval", "acceleration", "deceleration"), &ENetPacketPeer::throttle_configure);
 	ClassDB::bind_method(D_METHOD("set_timeout", "timeout", "timeout_min", "timeout_max"), &ENetPacketPeer::set_timeout);
+	ClassDB::bind_method(D_METHOD("set_network_simulation", "rtt_ms", "jitter_ms", "loss"), &ENetPacketPeer::set_network_simulation, DEFVAL(0.0), DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("get_packet_flags"), &ENetPacketPeer::get_packet_flags);
 	ClassDB::bind_method(D_METHOD("get_remote_address"), &ENetPacketPeer::get_remote_address);
 	ClassDB::bind_method(D_METHOD("get_remote_port"), &ENetPacketPeer::get_remote_port);
