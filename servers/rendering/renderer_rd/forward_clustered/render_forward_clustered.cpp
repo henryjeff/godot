@@ -2832,7 +2832,9 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 				// change at once) spreads over frames. budget <= 0 = unlimited (default). A never-built
 				// slot MUST render now (no cache to reuse); an already-built slot may be deferred (reuse
 				// stale depth one more frame, retry next frame).
-				extern uint32_t g_static_rebuilds_this_frame;
+				// NB: no block-scope `extern` here — the counter is file-scope above. A block extern
+				// inside this member function resolves to RendererSceneRenderImplementation:: on
+				// clang (undefined symbol on macOS) but to the global on MSVC.
 				const int __budget = GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_max_rebuilds_per_frame");
 				const bool __unbuilt = light_storage->shadow_atlas_cached_static_unbuilt(p_shadow_atlas, p_light);
 				const bool __defer = !__unbuilt && __budget > 0 && (int)g_static_rebuilds_this_frame >= __budget;
