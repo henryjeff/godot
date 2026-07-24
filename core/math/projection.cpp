@@ -168,6 +168,42 @@ Projection Projection::perspective_znear_adjusted(real_t p_new_znear) const {
 	return proj;
 }
 
+Projection Projection::obliqued_near_plane(const Plane &p_view_plane) const {
+	// Warp the projection so the near clip plane coincides with an arbitrary view-space
+	// plane (Eric Lengyel, "Oblique View Frustum Depth Projection and Clipping",
+	// JGT 10(1), 2005). The plane's normal must point into the half-space that remains
+	// visible, with the camera on the opposite side.
+	//
+	// Derivation: every view point P on the clip plane (C.P == 0) must land on GL
+	// z_ndc == -1, i.e. row2'.P == -(row3.P), so row2' + row3 == a*C for some scalar a
+	// -> row2' = a*C - row3. The scalar is calibrated so z_ndc == +1 is reached exactly
+	// at the old frustum's far corner in the plane's quadrant Q = M^-1*(sgn Cx, sgn Cy, 1, 1):
+	// because Q is the pre-image of a clip vector with w == 1, row3.Q == 1, giving
+	// a == 2 / (C.Q). Every old-frustum point has C.P <= C.Q, so nothing visible is
+	// far-clipped; the new frustum is exactly (old frustum) intersect {C.P >= 0}.
+	//
+	// NOTE: This assumes the classic GL-convention matrix this class builds (far z == +1,
+	// w_clip == -z_view). Apply it BEFORE any reverse-Z / remap depth correction.
+
+	// Homogeneous plane vector: C.(P,1) == n.P - d (>= 0 is the kept side).
+	Vector4 plane_c(p_view_plane.normal.x, p_view_plane.normal.y, p_view_plane.normal.z, -p_view_plane.d);
+	// Far corner of the NDC cube in the plane's quadrant (GL convention: far z == +1, w == 1).
+	Vector4 q = inverse().xform(Vector4(SIGN(plane_c.x), SIGN(plane_c.y), 1, 1));
+	real_t c_dot_q = plane_c.dot(q);
+	if (Math::is_zero_approx(c_dot_q)) {
+		// Degenerate (plane parallel to the calibration ray) - render unclipped.
+		return *this;
+	}
+	Vector4 scaled_c = plane_c * (2 / c_dot_q);
+	Projection proj = *this;
+	// Replace row 2 (z outputs) with a*C - row3 (row 3 = w row, untouched).
+	proj.columns[0][2] = scaled_c.x - columns[0][3];
+	proj.columns[1][2] = scaled_c.y - columns[1][3];
+	proj.columns[2][2] = scaled_c.z - columns[2][3];
+	proj.columns[3][2] = scaled_c.w - columns[3][3];
+	return proj;
+}
+
 Plane Projection::get_projection_plane(Planes p_plane) const {
 	const real_t *matrix = (const real_t *)columns;
 

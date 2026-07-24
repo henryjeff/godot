@@ -17,10 +17,17 @@
 				If this is the current camera, remove it from being current. If [param enable_next] is [code]true[/code], request to make the next camera current, if any.
 			</description>
 		</method>
+		<method name="clear_oblique_near_plane">
+			<return type="void" />
+			<description>
+				Disables the oblique near clip plane previously set with [method set_oblique_near_plane], restoring the standard near plane.
+			</description>
+		</method>
 		<method name="get_camera_projection" qualifiers="const">
 			<return type="Projection" />
 			<description>
 				Returns the projection matrix that this camera uses to render to its associated viewport. The camera must be part of the scene tree to function.
+				[b]Note:[/b] This matrix is never warped by [method set_oblique_near_plane]; scene-side queries such as [method project_ray_normal], [method unproject_position], and [method is_position_in_frustum] keep standard frustum semantics.
 			</description>
 		</method>
 		<method name="get_camera_rid" qualifiers="const">
@@ -48,10 +55,22 @@
 				Returns the camera's frustum planes in world space units as an array of [Plane]s in the following order: near, far, left, top, right, bottom. Not to be confused with [member frustum_offset].
 			</description>
 		</method>
+		<method name="get_oblique_near_plane" qualifiers="const">
+			<return type="Plane" />
+			<description>
+				Returns the last plane passed to [method set_oblique_near_plane]. Check [method has_oblique_near_plane] to know whether it is currently active.
+			</description>
+		</method>
 		<method name="get_pyramid_shape_rid">
 			<return type="RID" />
 			<description>
 				Returns the RID of a pyramid shape encompassing the camera's view frustum, ignoring the camera's near plane. The tip of the pyramid represents the position of the camera.
+			</description>
+		</method>
+		<method name="has_oblique_near_plane" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if an oblique near clip plane is currently set via [method set_oblique_near_plane].
 			</description>
 		</method>
 		<method name="is_position_behind" qualifiers="const">
@@ -120,6 +139,14 @@
 			<param index="3" name="z_far" type="float" />
 			<description>
 				Sets the camera projection to frustum mode (see [constant PROJECTION_FRUSTUM]), by specifying a [param size], an [param offset], and the [param z_near] and [param z_far] clip planes in world space units. The [param size] parameter represents the size of the near plane, either its width or height depending on the value of [member keep_aspect]. See also [member frustum_offset].
+			</description>
+		</method>
+		<method name="set_oblique_near_plane">
+			<return type="void" />
+			<param index="0" name="plane" type="Plane" />
+			<description>
+				Warps this camera's projection so its near clip plane coincides with the given [b]world-space[/b] plane (oblique view frustum, e.g. for portal or planar-reflection rendering). The plane's normal must point into the half-space that remains visible; the camera must be on the opposite side. The plane is stored server-side and re-expressed against the camera's exact render transform every frame, so it stays correct under physics interpolation. Calling this every frame with an unchanged plane is free. This is a runtime-only setting: it is not saved with the scene.
+				See also [method clear_oblique_near_plane], [method has_oblique_near_plane], and [method get_oblique_near_plane].
 			</description>
 		</method>
 		<method name="set_orthogonal">

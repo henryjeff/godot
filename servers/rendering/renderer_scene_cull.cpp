@@ -115,6 +115,19 @@ void RendererSceneCull::camera_set_frustum(RID p_camera, float p_size, Vector2 p
 	camera->zfar = p_z_far;
 }
 
+void RendererSceneCull::camera_set_oblique_near_plane(RID p_camera, const Plane &p_plane) {
+	Camera *camera = camera_owner.get_or_null(p_camera);
+	ERR_FAIL_NULL(camera);
+	camera->oblique_plane = p_plane;
+	camera->oblique = true;
+}
+
+void RendererSceneCull::camera_clear_oblique_near_plane(RID p_camera) {
+	Camera *camera = camera_owner.get_or_null(p_camera);
+	ERR_FAIL_NULL(camera);
+	camera->oblique = false;
+}
+
 void RendererSceneCull::camera_set_transform(RID p_camera, const Transform3D &p_transform) {
 	Camera *camera = camera_owner.get_or_null(p_camera);
 	ERR_FAIL_NULL(camera);
@@ -2952,7 +2965,27 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 			} break;
 		}
 
+		// Fork (oblique near plane): re-express the stored world-space plane against the camera's
+		// exact render transform and warp the projection so the near clip plane coincides with it
+		// (Lengyel oblique view frustum). This runs BEFORE the RD layer's reverse-Z depth
+		// correction, so the classic GL-convention row-2 replacement applies unchanged. Frustum
+		// culling deliberately keeps the warped matrix: its near plane IS the clip plane, so dead
+		// space behind it is culled. Consumers that plan distances/volumes ahead of rendering
+		// (cascade fitting, cluster/froxel fitting, scalar z_near/z_far) read the unwarped twin.
+		Projection projection_no_oblique = projection;
+		if (camera->oblique && camera->type != Camera::ORTHOGONAL) {
+			const real_t OBLIQUE_MIN_CAMERA_DIST = 0.001;
+			Plane view_plane = transform.affine_inverse().xform(camera->oblique_plane);
+			// Camera must sit strictly on the clipped side of the plane (signed distance of the
+			// view origin is -d); otherwise skip the warp for this frame and render with the
+			// standard near plane. Crossing the plane is expected, so no error here.
+			if (view_plane.d > OBLIQUE_MIN_CAMERA_DIST) {
+				projection = projection.obliqued_near_plane(view_plane);
+			}
+		}
+
 		camera_data.set_camera(transform, projection, is_orthogonal, vaspect, jitter, taa_frame_count, camera->visible_layers);
+		camera_data.main_projection_no_oblique = projection_no_oblique; // == main_projection when the warp was skipped.
 #ifndef XR_DISABLED
 	} else {
 		XRServer *xr_server = XRServer::get_singleton();
@@ -3610,7 +3643,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		RSG::light_storage->set_directional_shadow_count(lights_with_shadow.size());
 
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
-			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect);
+			// Fork (oblique near plane): cascades fit the unwarped frustum — a conservative
+			// superset of the visible (warped) one; get_z_near/get_z_far misread a warped matrix.
+			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection_no_oblique, p_camera_data->is_orthogonal, p_camera_data->vaspect);
 		}
 	}
 
@@ -3655,7 +3690,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		cull_data.visible_layers = p_visible_layers;
 		cull_data.render_reflection_probe = render_reflection_probe;
 		cull_data.occlusion_buffer = RendererSceneOcclusionCull::get_singleton()->buffer_get_ptr(p_viewport);
-		cull_data.camera_matrix = &p_camera_data->main_projection;
+		// Fork (oblique near plane): the cull-side matrix feeds occlusion's get_z_near() scalar and
+		// x/y screen-rect projection (rows untouched by the z-row warp) — use the unwarped twin.
+		// The occlusion BUFFER itself keeps the warped matrix (buffer_update must match rendering);
+		// the frustum culling planes come from the warped matrix elsewhere, as intended.
+		cull_data.camera_matrix = &p_camera_data->main_projection_no_oblique;
 		cull_data.visibility_viewport_mask = scenario->viewport_visibility_masks.has(p_viewport) ? scenario->viewport_visibility_masks[p_viewport] : 0;
 #ifdef DEBUG_CULL_TIME
 		uint64_t time_from = OS::get_singleton()->get_ticks_usec();
@@ -3736,12 +3775,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 			{ //compute coverage
 
+				// Fork (oblique near plane): scalar near-plane reads assume a z-facing near plane —
+				// use the unwarped twin (a warped matrix would return the tilted-plane axial
+				// distance, diverging as the plane grazes the view direction).
 				Transform3D cam_xf = p_camera_data->main_transform;
-				float zn = p_camera_data->main_projection.get_z_near();
+				float zn = p_camera_data->main_projection_no_oblique.get_z_near();
 				Plane p(-cam_xf.basis.get_column(2), cam_xf.origin + cam_xf.basis.get_column(2) * -zn); //camera near plane
 
 				// near plane half width and height
-				Vector2 vp_half_extents = p_camera_data->main_projection.get_viewport_half_extents();
+				Vector2 vp_half_extents = p_camera_data->main_projection_no_oblique.get_viewport_half_extents();
 
 				switch (RSG::light_storage->light_get_type(ins->base)) {
 					case RSE::LIGHT_OMNI: {
@@ -3898,7 +3940,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			if (redraw && max_shadows_used < MAX_UPDATE_SHADOWS) {
 				//must redraw!
 				RENDER_TIMESTAMP("> Render Light3D " + itos(i));
-				if (_light_instance_update_shadow(ins, p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_shadow_atlas, scenario, p_screen_mesh_lod_threshold, p_visible_layers, cache_static_spot)) {
+				if (_light_instance_update_shadow(ins, p_camera_data->main_transform, p_camera_data->main_projection_no_oblique, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_shadow_atlas, scenario, p_screen_mesh_lod_threshold, p_visible_layers, cache_static_spot)) {
 					light->make_shadow_dirty();
 				}
 				RENDER_TIMESTAMP("< Render Light3D " + itos(i));
