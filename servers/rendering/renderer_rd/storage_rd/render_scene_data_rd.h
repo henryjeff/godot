@@ -44,6 +44,10 @@ public:
 
 	Transform3D cam_transform;
 	Projection cam_projection;
+	// Fork (oblique near plane): == cam_projection unless an oblique near plane was applied.
+	// For consumers that plan distances/volumes ahead of rendering (cluster/froxel fitting);
+	// anything that inverts the true rendering transform stays on cam_projection.
+	Projection cam_projection_no_oblique;
 	Vector2 taa_jitter;
 	float taa_frame_count = 0.0f;
 	uint32_t camera_visible_layers;

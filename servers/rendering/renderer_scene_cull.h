@@ -90,6 +90,11 @@ public:
 
 		Transform3D transform;
 
+		// Fork (oblique near plane): world-space clip plane, re-expressed in view space and
+		// applied to the projection every frame in render_camera while enabled.
+		Plane oblique_plane;
+		bool oblique = false;
+
 		Camera() {
 			visible_layers = 0xFFFFFFFF;
 			fov = 75;
@@ -110,6 +115,8 @@ public:
 	virtual void camera_set_perspective(RID p_camera, float p_fovy_degrees, float p_z_near, float p_z_far);
 	virtual void camera_set_orthogonal(RID p_camera, float p_size, float p_z_near, float p_z_far);
 	virtual void camera_set_frustum(RID p_camera, float p_size, Vector2 p_offset, float p_z_near, float p_z_far);
+	virtual void camera_set_oblique_near_plane(RID p_camera, const Plane &p_plane);
+	virtual void camera_clear_oblique_near_plane(RID p_camera);
 	virtual void camera_set_transform(RID p_camera, const Transform3D &p_transform);
 	virtual void camera_set_cull_mask(RID p_camera, uint32_t p_layers);
 	virtual void camera_set_environment(RID p_camera, RID p_env);

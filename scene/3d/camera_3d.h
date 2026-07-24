@@ -75,6 +75,10 @@ private:
 	real_t h_offset = 0.0;
 	KeepAspect keep_aspect = KEEP_HEIGHT;
 
+	// Fork (oblique near plane): runtime-only, methods-only — no property, no serialization.
+	Plane oblique_near_plane;
+	bool oblique_near_plane_enabled = false;
+
 	RID camera;
 	RID scenario_id;
 
@@ -140,6 +144,11 @@ public:
 	void set_orthogonal(real_t p_size, real_t p_z_near, real_t p_z_far);
 	void set_frustum(real_t p_size, Vector2 p_offset, real_t p_z_near, real_t p_z_far);
 	void set_projection(Camera3D::ProjectionType p_mode);
+
+	void set_oblique_near_plane(const Plane &p_plane);
+	void clear_oblique_near_plane();
+	Plane get_oblique_near_plane() const;
+	bool has_oblique_near_plane() const;
 
 	void make_current();
 	void clear_current(bool p_enable_next = true);
