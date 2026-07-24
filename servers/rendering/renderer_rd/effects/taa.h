@@ -40,7 +40,7 @@ public:
 	TAA();
 	~TAA();
 
-	void process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far);
+	void process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far, bool p_reset_history = false);
 
 private:
 	struct TAAResolvePushConstant {

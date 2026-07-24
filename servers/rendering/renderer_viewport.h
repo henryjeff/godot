@@ -76,6 +76,7 @@ public:
 
 		RendererSceneRender::CameraData prev_camera_data;
 		uint64_t prev_camera_data_frame = 0;
+		bool camera_teleported = false; // One-shot: consumed by the next rendered frame (fork: camera-history reset).
 
 		bool use_occlusion_culling = false;
 		bool occlusion_buffer_dirty = false;
@@ -250,6 +251,9 @@ public:
 
 	void viewport_set_prev_camera_data(RID p_viewport, const RendererSceneRender::CameraData *p_camera_data);
 	const RendererSceneRender::CameraData *viewport_get_prev_camera_data(RID p_viewport);
+
+	void viewport_notify_camera_teleported(RID p_viewport);
+	bool viewport_take_camera_teleported(RID p_viewport); // Read-and-clear; render-time use only.
 
 	void viewport_set_disable_2d(RID p_viewport, bool p_disable);
 	void viewport_set_environment_mode(RID p_viewport, RSE::ViewportEnvironmentMode p_mode);

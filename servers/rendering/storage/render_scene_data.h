@@ -46,5 +46,10 @@ public:
 	virtual Vector3 get_view_eye_offset(uint32_t p_view) const = 0;
 	virtual Projection get_view_projection(uint32_t p_view) const = 0;
 
+	// Fork (camera-history reset): true only on a frame whose viewport was flagged via
+	// RenderingServer::viewport_notify_camera_teleported. Lets compositor effects discard
+	// their own temporal history without side-channels.
+	virtual bool get_camera_teleported() const { return false; }
+
 	virtual RID get_uniform_buffer() const = 0;
 };

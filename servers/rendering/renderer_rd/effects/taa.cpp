@@ -87,7 +87,7 @@ void TAA::resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_pr
 	RD::get_singleton()->compute_list_end();
 }
 
-void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far) {
+void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far, bool p_reset_history) {
 	CopyEffects *copy_effects = CopyEffects::get_singleton();
 
 	uint32_t view_count = p_render_buffers->get_view_count();
@@ -115,7 +115,9 @@ void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_f
 		RID taa_history = p_render_buffers->get_texture_slice(SNAME("taa"), SNAME("history"), v, 0);
 		RID taa_prev_velocity = p_render_buffers->get_texture_slice(SNAME("taa"), SNAME("prev_velocity"), v, 0);
 
-		if (!just_allocated) {
+		// Fork (camera-history reset): a requested history reset takes the same path as
+		// first allocation — skip the resolve and re-seed history from the current frame.
+		if (!just_allocated && !p_reset_history) {
 			RID depth_texture = p_render_buffers->get_depth_texture(v);
 			RID taa_temp = p_render_buffers->get_texture_slice(SNAME("taa"), SNAME("temp"), v, 0);
 			resolve(internal_texture, taa_temp, depth_texture, velocity_buffer, taa_prev_velocity, taa_history, Size2(internal_size.x, internal_size.y), p_z_near, p_z_far);
