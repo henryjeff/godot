@@ -111,6 +111,13 @@
 				[/codeblock]
 			</description>
 		</method>
+		<method name="camera_clear_oblique_near_plane">
+			<return type="void" />
+			<param index="0" name="camera" type="RID" />
+			<description>
+				Disables the oblique near clip plane previously set with [method camera_set_oblique_near_plane], restoring the camera's standard near plane.
+			</description>
+		</method>
 		<method name="camera_create">
 			<return type="RID" />
 			<description>
@@ -160,6 +167,15 @@
 			<param index="4" name="z_far" type="float" />
 			<description>
 				Sets camera to use frustum projection. This mode allows adjusting the [param offset] argument to create "tilted frustum" effects.
+			</description>
+		</method>
+		<method name="camera_set_oblique_near_plane">
+			<return type="void" />
+			<param index="0" name="camera" type="RID" />
+			<param index="1" name="plane" type="Plane" />
+			<description>
+				Warps the camera's projection so its near clip plane coincides with the given [b]world-space[/b] plane (oblique view frustum, e.g. for portal or planar-reflection rendering). The plane's normal must point into the half-space that remains visible; the camera must be on the opposite side. The plane is stored on the camera and re-expressed against the camera's exact render transform every frame, so it stays correct under physics interpolation. On any frame where the camera is not strictly on the clipped side of the plane, the warp is skipped and the standard near plane applies. Orthogonal cameras are not supported.
+				See also [method camera_clear_oblique_near_plane] and the [Camera3D] wrappers [method Camera3D.set_oblique_near_plane] and [method Camera3D.clear_oblique_near_plane].
 			</description>
 		</method>
 		<method name="camera_set_orthogonal">

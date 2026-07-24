@@ -1376,6 +1376,7 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 		// Our first camera is used by default
 		scene_data.cam_transform = p_camera_data->main_transform;
 		scene_data.cam_projection = p_camera_data->main_projection;
+		scene_data.cam_projection_no_oblique = p_camera_data->main_projection_no_oblique;
 		scene_data.cam_orthogonal = p_camera_data->is_orthogonal;
 		scene_data.camera_visible_layers = p_camera_data->visible_layers;
 		scene_data.taa_jitter = p_camera_data->taa_jitter;
@@ -1399,8 +1400,11 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 
 		scene_data.camera_teleported = p_camera_data->camera_teleported;
 
-		scene_data.z_near = p_camera_data->main_projection.get_z_near();
-		scene_data.z_far = p_camera_data->main_projection.get_z_far();
+		// Fork (oblique near plane): scalar near/far mean "camera near/far" — a warped matrix
+		// would return axial distances to the tilted planes (diverging as the plane grazes the
+		// view direction), so read the unwarped twin.
+		scene_data.z_near = p_camera_data->main_projection_no_oblique.get_z_near();
+		scene_data.z_far = p_camera_data->main_projection_no_oblique.get_z_far();
 
 		// this should be the same for all cameras..
 		const float lod_distance_multiplier = p_camera_data->main_projection.get_lod_multiplier();

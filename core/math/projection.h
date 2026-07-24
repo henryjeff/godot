@@ -96,6 +96,7 @@ struct [[nodiscard]] Projection {
 	static Projection create_frustum_aspect(real_t p_size, real_t p_aspect, Vector2 p_offset, real_t p_near, real_t p_far, bool p_flip_fov = false);
 	static Projection create_fit_aabb(const AABB &p_aabb);
 	Projection perspective_znear_adjusted(real_t p_new_znear) const;
+	Projection obliqued_near_plane(const Plane &p_view_plane) const;
 	Plane get_projection_plane(Planes p_plane) const;
 	Projection flipped_y() const;
 	Projection jitter_offseted(const Vector2 &p_offset) const;

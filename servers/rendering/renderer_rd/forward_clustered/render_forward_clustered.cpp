@@ -1683,7 +1683,12 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		// This only works as we don't filter our cluster by depth buffer.
 		// If we ever make this optimization we should make it optional and only use it in mono.
 		// What we win by filtering out a few lights, we loose by having to do the work double for stereo.
-		current_cluster_builder->begin(p_render_data->scene_data->cam_transform, p_render_data->scene_data->cam_projection, !p_render_data->reflection_probe.is_valid());
+		// Fork (oblique near plane): the cluster builder calls adjust_perspective_znear(), which
+		// assumes the standard perspective shape and would corrupt a warped z-row — feed it the
+		// unwarped twin. Cluster x/y tiling only reads rows 0/1 (identical), the z slicing covers
+		// a superset of the warped frustum's view-z range, and the shader-side cluster fetch keys
+		// on the fragment's view-space z, so every rendered fragment lands in a valid cluster.
+		current_cluster_builder->begin(p_render_data->scene_data->cam_transform, p_render_data->scene_data->cam_projection_no_oblique, !p_render_data->reflection_probe.is_valid());
 	}
 
 	bool using_shadows = true;
@@ -1711,7 +1716,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	if (rb_data.is_valid()) {
 		RENDER_TIMESTAMP("Update Volumetric Fog");
 		bool directional_shadows = RendererRD::LightStorage::get_singleton()->has_directional_shadows(directional_light_count);
-		_update_volumetric_fog(rb, p_render_data->environment, p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform, p_render_data->scene_data->prev_cam_transform.affine_inverse(), p_render_data->shadow_atlas, directional_light_count, directional_shadows, positional_light_count, p_render_data->voxel_gi_count, *p_render_data->fog_volumes);
+		// Fork (oblique near plane): froxel frustum fitting assumes the standard projection shape —
+		// feed it the unwarped twin (a conservative superset of the warped frustum).
+		_update_volumetric_fog(rb, p_render_data->environment, p_render_data->scene_data->cam_projection_no_oblique, p_render_data->scene_data->cam_transform, p_render_data->scene_data->prev_cam_transform.affine_inverse(), p_render_data->shadow_atlas, directional_light_count, directional_shadows, positional_light_count, p_render_data->voxel_gi_count, *p_render_data->fog_volumes);
 	}
 }
 

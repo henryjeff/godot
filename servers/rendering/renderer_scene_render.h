@@ -317,6 +317,10 @@ public:
 		// Main/center projection
 		Transform3D main_transform;
 		Projection main_projection;
+		// Fork (oblique near plane): == main_projection unless an oblique near plane was applied.
+		// For consumers that plan distances/volumes ahead of rendering (scalar z_near/z_far,
+		// cascade fitting, cluster/froxel fitting) and would misread or corrupt the warped matrix.
+		Projection main_projection_no_oblique;
 
 		Transform3D view_offset[RendererSceneRender::MAX_RENDER_VIEWS];
 		Projection view_projection[RendererSceneRender::MAX_RENDER_VIEWS];

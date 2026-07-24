@@ -363,6 +363,36 @@ void Camera3D::set_frustum(real_t p_size, Vector2 p_offset, real_t p_z_near, rea
 	update_gizmos();
 }
 
+void Camera3D::set_oblique_near_plane(const Plane &p_plane) {
+	// Fork (oblique near plane): world-space clip plane whose normal points into the visible
+	// half-space; the server re-expresses it against the camera's exact render transform every
+	// frame (correct under physics interpolation) and warps the projection so the near clip
+	// plane coincides with it. Scene-side projection queries (project_ray, unproject_position,
+	// is_position_in_frustum) deliberately stay unwarped.
+	if (oblique_near_plane_enabled && oblique_near_plane == p_plane) {
+		return; // Per-frame re-sets from scripts are free.
+	}
+	oblique_near_plane = p_plane;
+	oblique_near_plane_enabled = true;
+	RenderingServer::get_singleton()->camera_set_oblique_near_plane(camera, p_plane);
+}
+
+void Camera3D::clear_oblique_near_plane() {
+	if (!oblique_near_plane_enabled) {
+		return;
+	}
+	oblique_near_plane_enabled = false;
+	RenderingServer::get_singleton()->camera_clear_oblique_near_plane(camera);
+}
+
+Plane Camera3D::get_oblique_near_plane() const {
+	return oblique_near_plane;
+}
+
+bool Camera3D::has_oblique_near_plane() const {
+	return oblique_near_plane_enabled;
+}
+
 void Camera3D::set_projection(ProjectionType p_mode) {
 	if (p_mode == PROJECTION_PERSPECTIVE || p_mode == PROJECTION_ORTHOGONAL || p_mode == PROJECTION_FRUSTUM) {
 		mode = p_mode;
@@ -704,6 +734,10 @@ void Camera3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_perspective", "fov", "z_near", "z_far"), &Camera3D::set_perspective);
 	ClassDB::bind_method(D_METHOD("set_orthogonal", "size", "z_near", "z_far"), &Camera3D::set_orthogonal);
 	ClassDB::bind_method(D_METHOD("set_frustum", "size", "offset", "z_near", "z_far"), &Camera3D::set_frustum);
+	ClassDB::bind_method(D_METHOD("set_oblique_near_plane", "plane"), &Camera3D::set_oblique_near_plane);
+	ClassDB::bind_method(D_METHOD("clear_oblique_near_plane"), &Camera3D::clear_oblique_near_plane);
+	ClassDB::bind_method(D_METHOD("get_oblique_near_plane"), &Camera3D::get_oblique_near_plane);
+	ClassDB::bind_method(D_METHOD("has_oblique_near_plane"), &Camera3D::has_oblique_near_plane);
 	ClassDB::bind_method(D_METHOD("make_current"), &Camera3D::make_current);
 	ClassDB::bind_method(D_METHOD("clear_current", "enable_next"), &Camera3D::clear_current, DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("set_current", "enabled"), &Camera3D::set_current);
