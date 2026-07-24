@@ -62,6 +62,7 @@ public:
 	Projection prev_cam_projection;
 	Vector2 prev_taa_jitter;
 	Projection prev_view_projection[RendererSceneRender::MAX_RENDER_VIEWS];
+	bool camera_teleported = false; // Fork (camera-history reset): temporal accumulators must discard history this frame.
 
 	float z_near = 0.0;
 	float z_far = 0.0;
@@ -92,6 +93,8 @@ public:
 	virtual uint32_t get_view_count() const override;
 	virtual Vector3 get_view_eye_offset(uint32_t p_view) const override;
 	virtual Projection get_view_projection(uint32_t p_view) const override;
+
+	virtual bool get_camera_teleported() const override;
 
 	RID create_uniform_buffer();
 	void update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw p_debug_mode, RID p_env, RID p_reflection_probe_instance, RID p_camera_attributes, bool p_pancake_shadows, const Size2i &p_screen_size, const Size2 &p_viewport_size, const Color &p_default_bg_color, float p_luminance_multiplier, bool p_opaque_render_buffers, bool p_apply_alpha_multiplier);

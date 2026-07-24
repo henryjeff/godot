@@ -40,5 +40,7 @@ void RenderSceneData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_view_eye_offset", "view"), &RenderSceneData::get_view_eye_offset);
 	ClassDB::bind_method(D_METHOD("get_view_projection", "view"), &RenderSceneData::get_view_projection);
 
+	ClassDB::bind_method(D_METHOD("get_camera_teleported"), &RenderSceneData::get_camera_teleported);
+
 	ClassDB::bind_method(D_METHOD("get_uniform_buffer"), &RenderSceneData::get_uniform_buffer);
 }

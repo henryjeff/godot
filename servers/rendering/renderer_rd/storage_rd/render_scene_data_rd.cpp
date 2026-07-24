@@ -67,6 +67,10 @@ Projection RenderSceneDataRD::get_view_projection(uint32_t p_view) const {
 	return correction * view_projection[p_view];
 }
 
+bool RenderSceneDataRD::get_camera_teleported() const {
+	return camera_teleported;
+}
+
 RID RenderSceneDataRD::create_uniform_buffer() {
 	return RD::get_singleton()->uniform_buffer_create(sizeof(UBODATA));
 }
