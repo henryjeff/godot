@@ -24,6 +24,12 @@
 				[b]Note:[/b] If more than one view is rendered, this will return a centered transform.
 			</description>
 		</method>
+		<method name="get_camera_teleported" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] only on a frame whose viewport was flagged via [method RenderingServer.viewport_notify_camera_teleported]. Compositor effects with their own temporal history should discard it on such frames.
+			</description>
+		</method>
 		<method name="get_uniform_buffer" qualifiers="const">
 			<return type="RID" />
 			<description>

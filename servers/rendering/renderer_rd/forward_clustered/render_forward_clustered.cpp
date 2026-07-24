@@ -1456,7 +1456,7 @@ void RenderForwardClustered::_process_ssao(Ref<RenderSceneBuffersRD> p_render_bu
 	}
 }
 
-void RenderForwardClustered::_process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform) {
+void RenderForwardClustered::_process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform, bool p_camera_teleported) {
 	ERR_FAIL_NULL(ss_effects);
 	ERR_FAIL_COND(p_render_buffers.is_null());
 	ERR_FAIL_COND(p_environment.is_null());
@@ -1478,6 +1478,17 @@ void RenderForwardClustered::_process_ssil(Ref<RenderSceneBuffersRD> p_render_bu
 	Transform3D transform = p_transform;
 	transform.set_origin(Vector3(0.0, 0.0, 0.0));
 
+	if (p_camera_teleported) {
+		// Fork (camera-history reset): stomp the reprojection cache with the current camera so
+		// the last-frame reprojection below becomes identity; stale color fades in place.
+		rb_data->ss_effects_data.ssil_last_frame_transform = transform;
+		for (uint32_t v = 0; v < p_render_buffers->get_view_count(); v++) {
+			Projection correction;
+			correction.set_depth_correction(true);
+			rb_data->ss_effects_data.ssil_last_frame_projections[v] = correction * p_projections[v];
+		}
+	}
+
 	for (uint32_t v = 0; v < p_render_buffers->get_view_count(); v++) {
 		Projection correction;
 		correction.set_depth_correction(true);
@@ -1491,7 +1502,7 @@ void RenderForwardClustered::_process_ssil(Ref<RenderSceneBuffersRD> p_render_bu
 	rb_data->ss_effects_data.ssil_last_frame_transform = transform;
 }
 
-void RenderForwardClustered::_process_ssr(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_slices, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_transform) {
+void RenderForwardClustered::_process_ssr(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_slices, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_transform, bool p_camera_teleported) {
 	ERR_FAIL_NULL(ss_effects);
 	ERR_FAIL_COND(p_render_buffers.is_null());
 
@@ -1503,6 +1514,17 @@ void RenderForwardClustered::_process_ssr(Ref<RenderSceneBuffersRD> p_render_buf
 	ss_effects->ssr_allocate_buffers(p_render_buffers, rb_data->ss_effects_data.ssr, p_render_buffers->get_base_data_format());
 
 	Projection reprojections[RendererSceneRender::MAX_RENDER_VIEWS];
+
+	if (p_camera_teleported) {
+		// Fork (camera-history reset): stomp the reprojection cache with the current camera so
+		// the reprojections below become identity; stale history fades in place.
+		rb_data->ss_effects_data.ssr_last_frame_transform = p_transform;
+		for (uint32_t v = 0; v < p_render_buffers->get_view_count(); v++) {
+			Projection correction;
+			correction.set_depth_correction(true);
+			rb_data->ss_effects_data.ssr_last_frame_projections[v] = correction * p_projections[v];
+		}
+	}
 
 	for (uint32_t v = 0; v < p_render_buffers->get_view_count(); v++) {
 		Projection correction;
@@ -1644,12 +1666,12 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			}
 
 			if (p_use_ssil) {
-				_process_ssil(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform);
+				_process_ssil(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, p_render_data->scene_data->camera_teleported);
 			}
 		}
 
 		if (p_use_ssr) {
-			_process_ssr(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection, p_render_data->scene_data->view_eye_offset, p_render_data->scene_data->cam_transform);
+			_process_ssr(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection, p_render_data->scene_data->view_eye_offset, p_render_data->scene_data->cam_transform, p_render_data->scene_data->camera_teleported);
 		}
 	}
 
@@ -2502,7 +2524,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.fovy = fovy;
 				params.jitter = jitter;
 				params.delta_time = float(time_step);
-				params.reset_accumulation = false; // FIXME: The engine does not provide a way to reset the accumulation.
+				params.reset_accumulation = p_render_data->scene_data->camera_teleported; // Fork (camera-history reset).
 
 				Projection correction;
 				correction.set_depth_correction(true, true, false);
@@ -2539,7 +2561,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.exposure = exposure;
 				params.dst = rb->get_upscaled_texture(v);
 				params.jitter_offset = jitter;
-				params.reset = reset;
+				params.reset = reset || p_render_data->scene_data->camera_teleported; // Fork (camera-history reset).
 
 				mfx_temporal_effect->process(rb_data->get_mfx_temporal_context(), params);
 			}
@@ -2549,7 +2571,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		} else if (using_taa) {
 			RD::get_singleton()->draw_command_begin_label("TAA");
 			RENDER_TIMESTAMP("TAA");
-			taa->process(rb, rb->get_base_data_format(), p_render_data->scene_data->z_near, p_render_data->scene_data->z_far);
+			taa->process(rb, rb->get_base_data_format(), p_render_data->scene_data->z_near, p_render_data->scene_data->z_far, p_render_data->scene_data->camera_teleported);
 			RD::get_singleton()->draw_command_end_label();
 		}
 	}

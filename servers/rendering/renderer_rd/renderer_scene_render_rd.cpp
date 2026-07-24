@@ -1397,6 +1397,8 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 			scene_data.prev_view_projection[v] = p_prev_camera_data->view_projection[v];
 		}
 
+		scene_data.camera_teleported = p_camera_data->camera_teleported;
+
 		scene_data.z_near = p_camera_data->main_projection.get_z_near();
 		scene_data.z_far = p_camera_data->main_projection.get_z_far();
 

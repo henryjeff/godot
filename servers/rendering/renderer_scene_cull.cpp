@@ -3000,6 +3000,11 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 #endif // XR_DISABLED
 	}
 
+	// Fork (camera-history reset): consume the viewport's one-shot teleport flag for the frame
+	// being built. Only render_camera consumes it — reflection probes and shadow passes build
+	// their own CameraData and must not eat (or react to) the flag.
+	camera_data.camera_teleported = RSG::viewport->viewport_take_camera_teleported(p_viewport);
+
 	RID environment = _render_get_environment(p_camera, p_scenario);
 	RID compositor = _render_get_compositor(p_camera, p_scenario);
 
@@ -3967,7 +3972,12 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	const RendererSceneRender::CameraData *prev_camera_data = p_camera_data;
 	if (p_viewport.is_valid()) {
 		occluders_tex = RSG::viewport->viewport_get_occluder_debug_texture(p_viewport);
-		prev_camera_data = RSG::viewport->viewport_get_prev_camera_data(p_viewport);
+		if (!p_camera_data->camera_teleported) {
+			// Fork (camera-history reset): on a teleport frame keep prev == current so
+			// camera-derived motion vectors are exactly zero. The write-back below is
+			// unchanged, so the next frame has honest history again.
+			prev_camera_data = RSG::viewport->viewport_get_prev_camera_data(p_viewport);
+		}
 	}
 
 	RENDER_TIMESTAMP("Render 3D Scene");

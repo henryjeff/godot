@@ -229,6 +229,15 @@ void Camera3D::_notification(int p_what) {
 			}
 		} break;
 
+		case NOTIFICATION_RESET_PHYSICS_INTERPOLATION: {
+			// One common interface with instance teleport (see VisualInstance3D): a camera
+			// whose interpolation is reset also resets its viewport's temporal history
+			// (prev-camera data, TAA/upscaler accumulation). Fork: camera-history reset.
+			if (is_inside_tree() && is_current()) {
+				RenderingServer::get_singleton()->viewport_notify_camera_teleported(get_viewport()->get_viewport_rid());
+			}
+		} break;
+
 		case NOTIFICATION_EXIT_WORLD: {
 			if (!is_part_of_edited_scene()) {
 				if (is_current()) {

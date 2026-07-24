@@ -1395,6 +1395,20 @@ const RendererSceneRender::CameraData *RendererViewport::viewport_get_prev_camer
 	return &viewport->prev_camera_data;
 }
 
+void RendererViewport::viewport_notify_camera_teleported(RID p_viewport) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	viewport->camera_teleported = true;
+}
+
+bool RendererViewport::viewport_take_camera_teleported(RID p_viewport) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL_V(viewport, false);
+	bool teleported = viewport->camera_teleported;
+	viewport->camera_teleported = false;
+	return teleported;
+}
+
 void RendererViewport::viewport_set_disable_2d(RID p_viewport, bool p_disable) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);

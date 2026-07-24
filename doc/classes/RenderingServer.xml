@@ -4195,6 +4195,15 @@
 				[b]Warning:[/b] Calling this from any thread other than the rendering thread will be detrimental to performance.
 			</description>
 		</method>
+		<method name="viewport_notify_camera_teleported">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Marks the viewport's camera as discontinuous for the next rendered frame: previous-frame camera data is replaced with the current frame's (camera-derived motion vectors become exactly zero) and temporal antialiasing / upscaler history is discarded (TAA, FSR2, MetalFX temporal). Call this after teleporting the camera that renders the viewport, typically alongside [method Node.reset_physics_interpolation] on the teleported subtree.
+				The flag is one-shot and consumed by the next frame the viewport actually renders, so it may safely be set on a viewport whose update mode is currently [constant VIEWPORT_UPDATE_DISABLED].
+				[b]Note:[/b] [Camera3D] triggers this automatically for its viewport when it receives [constant Node.NOTIFICATION_RESET_PHYSICS_INTERPOLATION] while current.
+			</description>
+		</method>
 		<method name="viewport_remove_canvas">
 			<return type="void" />
 			<param index="0" name="viewport" type="RID" />
