@@ -592,6 +592,7 @@ void BaseMaterial3D::init_shaders() {
 	shader_names->heightmap_flip = "heightmap_flip";
 
 	shader_names->grow = "grow";
+	shader_names->clip_plane = "clip_plane";
 
 	shader_names->ao_light_affect = "ao_light_affect";
 
@@ -943,6 +944,15 @@ uniform sampler2D texture_albedo : source_color, %s;
 
 	if (grow_enabled) {
 		code += "uniform float grow : hint_range(-16.0, 16.0, 0.001);\n";
+	}
+
+	// Portal slicing: world-space clip plane (xyz = normal, w = plane distance).
+	// Fragments where dot(world_pos, normal) < w are discarded. Gated by the flag
+	// so materials that don't opt in keep the depth-prepass fast path untouched.
+	// World pos is reconstructed in fragment() from the view-space fragment (not a
+	// vertex varying) so it stays correct for SKINNED meshes.
+	if (flags[FLAG_USE_CLIP_PLANE]) {
+		code += "uniform vec4 clip_plane;\n";
 	}
 
 	if (proximity_fade_enabled) {
@@ -1477,6 +1487,14 @@ vec4 triplanar_texture(sampler2D p_sampler, vec3 p_weights, vec3 p_triplanar_pos
 	// Generate fragment shader.
 	code += R"(
 void fragment() {)";
+
+	// Portal slicing: discard fragments on the negative side of the clip plane.
+	// World pos is reconstructed from the view-space fragment position via
+	// INV_VIEW_MATRIX — correct for skinned meshes (reflects final skinning),
+	// unlike a vertex MODEL_MATRIX*VERTEX which is the pre-skin rest pose.
+	if (flags[FLAG_USE_CLIP_PLANE]) {
+		code += "\n\tif (dot((INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, clip_plane.xyz) - clip_plane.w < 0.0) {\n\t\tdiscard;\n\t}\n";
+	}
 
 	if (!flags[FLAG_UV1_USE_TRIPLANAR]) {
 		code += R"(
@@ -2474,6 +2492,7 @@ void BaseMaterial3D::set_flag(Flags p_flag, bool p_enabled) {
 			p_flag == FLAG_UV2_USE_TRIPLANAR ||
 			p_flag == FLAG_USE_Z_CLIP_SCALE ||
 			p_flag == FLAG_USE_FOV_OVERRIDE ||
+			p_flag == FLAG_USE_CLIP_PLANE ||
 			p_flag == FLAG_DISABLE_DEPTH_TEST) {
 		notify_property_list_changed();
 	}
@@ -2563,6 +2582,10 @@ void BaseMaterial3D::_validate_property(PropertyInfo &p_property) const {
 		}
 
 		if (p_property.name == "point_size" && !flags[FLAG_USE_POINT_SIZE]) {
+			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+		}
+
+		if (p_property.name == "clip_plane" && !flags[FLAG_USE_CLIP_PLANE]) {
 			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 		}
 
@@ -2917,6 +2940,17 @@ void BaseMaterial3D::set_grow(float p_grow) {
 
 float BaseMaterial3D::get_grow() const {
 	return grow;
+}
+
+void BaseMaterial3D::set_clip_plane(const Plane &p_clip_plane) {
+	clip_plane = p_clip_plane;
+	// Push as vec4 (normal.xyz, d); the shader tests dot(pos, xyz) - w. Vector4 maps
+	// to the shader vec4 unambiguously (unlike relying on a Plane->vec4 coercion).
+	_material_set_param(shader_names->clip_plane, Vector4(p_clip_plane.normal.x, p_clip_plane.normal.y, p_clip_plane.normal.z, p_clip_plane.d));
+}
+
+Plane BaseMaterial3D::get_clip_plane() const {
+	return clip_plane;
 }
 
 static Vector4 _get_texture_mask(BaseMaterial3D::TextureChannel p_channel) {
@@ -3483,6 +3517,9 @@ void BaseMaterial3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_grow", "amount"), &BaseMaterial3D::set_grow);
 	ClassDB::bind_method(D_METHOD("get_grow"), &BaseMaterial3D::get_grow);
 
+	ClassDB::bind_method(D_METHOD("set_clip_plane", "clip_plane"), &BaseMaterial3D::set_clip_plane);
+	ClassDB::bind_method(D_METHOD("get_clip_plane"), &BaseMaterial3D::get_clip_plane);
+
 	ClassDB::bind_method(D_METHOD("set_emission_operator", "operator"), &BaseMaterial3D::set_emission_operator);
 	ClassDB::bind_method(D_METHOD("get_emission_operator"), &BaseMaterial3D::get_emission_operator);
 
@@ -3728,6 +3765,8 @@ void BaseMaterial3D::_bind_methods() {
 	ADD_PROPERTYI(PropertyInfo(Variant::BOOL, "use_z_clip_scale"), "set_flag", "get_flag", FLAG_USE_Z_CLIP_SCALE);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "z_clip_scale", PROPERTY_HINT_RANGE, "0.01,1.0,0.01"), "set_z_clip_scale", "get_z_clip_scale");
 	ADD_PROPERTYI(PropertyInfo(Variant::BOOL, "use_fov_override"), "set_flag", "get_flag", FLAG_USE_FOV_OVERRIDE);
+	ADD_PROPERTYI(PropertyInfo(Variant::BOOL, "use_clip_plane"), "set_flag", "get_flag", FLAG_USE_CLIP_PLANE);
+	ADD_PROPERTY(PropertyInfo(Variant::PLANE, "clip_plane"), "set_clip_plane", "get_clip_plane");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fov_override", PROPERTY_HINT_RANGE, "1,179,0.1,degrees"), "set_fov_override", "get_fov_override");
 
 	ADD_GROUP("Proximity Fade", "proximity_fade_");
@@ -3857,6 +3896,7 @@ void BaseMaterial3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(FLAG_DISABLE_SPECULAR_OCCLUSION);
 	BIND_ENUM_CONSTANT(FLAG_USE_Z_CLIP_SCALE);
 	BIND_ENUM_CONSTANT(FLAG_USE_FOV_OVERRIDE);
+	BIND_ENUM_CONSTANT(FLAG_USE_CLIP_PLANE);
 	BIND_ENUM_CONSTANT(FLAG_MAX);
 
 	BIND_ENUM_CONSTANT(DIFFUSE_BURLEY);

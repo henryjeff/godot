@@ -278,6 +278,7 @@ public:
 		FLAG_DISABLE_SPECULAR_OCCLUSION,
 		FLAG_USE_Z_CLIP_SCALE,
 		FLAG_USE_FOV_OVERRIDE,
+		FLAG_USE_CLIP_PLANE,
 		FLAG_MAX
 	};
 
@@ -495,6 +496,7 @@ private:
 		StringName uv1_blend_sharpness;
 		StringName uv2_blend_sharpness;
 		StringName grow;
+		StringName clip_plane;
 		StringName proximity_fade_distance;
 		StringName msdf_pixel_range;
 		StringName msdf_outline_size;
@@ -563,6 +565,9 @@ private:
 	bool grow_enabled = false;
 	float ao_light_affect = 0.0f;
 	float grow = 0.0f;
+	// Portal slicing: world-space clip plane. When FLAG_USE_CLIP_PLANE is set, the
+	// generated shader discards fragments on the negative side of this plane.
+	Plane clip_plane;
 	int particles_anim_h_frames = 0;
 	int particles_anim_v_frames = 0;
 	bool particles_anim_loop = false;
@@ -807,6 +812,9 @@ public:
 
 	void set_grow(float p_grow);
 	float get_grow() const;
+
+	void set_clip_plane(const Plane &p_clip_plane);
+	Plane get_clip_plane() const;
 
 	void set_alpha_scissor_threshold(float p_threshold);
 	float get_alpha_scissor_threshold() const;
