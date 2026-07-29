@@ -419,6 +419,16 @@ private:
 				RID static_fb;
 				uint64_t cached_static_version = UINT64_MAX;
 
+				// Per-FACE cached static depth, for AREA lights (hemicube). Area shadows are
+				// generated as six cube faces and blitted into the slot, so the slot-level cache
+				// above cannot be used: the blit overwrites whatever was staged there. Cache the
+				// cube instead -- statics render into these faces once, get copied into the shared
+				// working cubemap each frame, dynamics overlay on top, then the blit runs.
+				// Face size is half the slot (matching get_cubemap(shadow_size / 2)), so this costs
+				// 6 * (slot/2)^2 = 1.5x one slot, NOT 6x. Shares cached_static_version above.
+				RID static_cube;
+				RID static_cube_fb[6];
+
 				Shadow() {}
 			};
 
@@ -1171,6 +1181,10 @@ public:
 	// shadow_atlas_get_cached_static_depth() into the atlas slot before the dynamic overlay.
 	RID shadow_atlas_get_cached_static_fb(RID p_atlas, RID p_light_instance);
 	RID shadow_atlas_get_cached_static_depth(RID p_atlas, RID p_light_instance);
+	// AREA hemicube variant: per-face cached static depth. `p_face` is the cube face (0-5).
+	// Allocates the whole cube on first use, like the spot pair above.
+	RID shadow_atlas_get_cached_static_cube_fb(RID p_atlas, RID p_light_instance, int p_face);
+	RID shadow_atlas_get_cached_static_cube(RID p_atlas, RID p_light_instance);
 	bool shadow_atlas_cached_static_take_dirty(RID p_atlas, RID p_light_instance, uint64_t p_static_version, bool p_commit = true);
 	bool shadow_atlas_cached_static_unbuilt(RID p_atlas, RID p_light_instance);
 

@@ -2802,6 +2802,19 @@ void LightStorage::_shadow_atlas_invalidate_shadow(ShadowAtlas::Quadrant::Shadow
 		RD::get_singleton()->free_rid(p_shadow->static_depth);
 		p_shadow->static_depth = RID();
 	}
+	// Same reasoning for the AREA hemicube's per-face cache: a reassigned or resized slot must
+	// never copy a previous owner's faces into the working cubemap.
+	for (int i = 0; i < 6; i++) {
+		if (p_shadow->static_cube_fb[i].is_valid()) {
+			RD::get_singleton()->free_rid(p_shadow->static_cube_fb[i]);
+			p_shadow->static_cube_fb[i] = RID();
+		}
+	}
+	if (p_shadow->static_cube.is_valid()) {
+		g_atlas_inval_freed_static++; // DIAGNOSTIC: destroyed a REAL cached static depth
+		RD::get_singleton()->free_rid(p_shadow->static_cube);
+		p_shadow->static_cube = RID();
+	}
 	p_shadow->cached_static_version = UINT64_MAX;
 }
 
@@ -2854,6 +2867,65 @@ RID LightStorage::shadow_atlas_get_cached_static_fb(RID p_atlas, RID p_light_ins
 		slot.cached_static_version = UINT64_MAX; // force a static re-render into the fresh texture
 	}
 	return slot.static_fb;
+}
+
+RID LightStorage::shadow_atlas_get_cached_static_cube_fb(RID p_atlas, RID p_light_instance, int p_face) {
+	ERR_FAIL_INDEX_V(p_face, 6, RID());
+	ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
+	ERR_FAIL_NULL_V(atlas, RID());
+	if (!atlas->shadow_owners.has(p_light_instance)) {
+		return RID();
+	}
+	uint32_t key = atlas->shadow_owners[p_light_instance];
+	uint32_t quadrant = (key >> QUADRANT_SHIFT) & 0x3;
+	uint32_t shadow = key & SHADOW_INDEX_MASK;
+	if (shadow >= (uint32_t)atlas->quadrants[quadrant].shadows.size()) {
+		return RID();
+	}
+	uint32_t subdiv = atlas->quadrants[quadrant].subdivision;
+	uint32_t slot_size = subdiv ? (uint32_t)((atlas->size >> 1) / subdiv) : 0;
+	// Faces are half the slot, mirroring get_cubemap(shadow_size / 2) in the renderer -- the copy
+	// into the working cubemap is layer-to-layer, so the sizes have to agree exactly.
+	uint32_t face_size = slot_size >> 1;
+	if (face_size == 0) {
+		return RID();
+	}
+	ShadowAtlas::Quadrant::Shadow &slot = atlas->quadrants[quadrant].shadows.write[shadow];
+	if (slot.static_cube.is_null()) {
+		g_static_fb_alloc++; // DIAGNOSTIC: shares the spot counter -- a fresh alloc means it was freed/recreated
+		RD::TextureFormat tf;
+		tf.format = get_cubemap_depth_format();
+		tf.width = face_size;
+		tf.height = face_size;
+		tf.texture_type = RD::TEXTURE_TYPE_CUBE;
+		tf.array_layers = 6;
+		// CAN_COPY_FROM: each face is copied into the shared working cubemap every frame.
+		tf.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		slot.static_cube = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		for (int i = 0; i < 6; i++) {
+			RID side = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), slot.static_cube, i, 0);
+			Vector<RID> fbtex;
+			fbtex.push_back(side);
+			slot.static_cube_fb[i] = RD::get_singleton()->framebuffer_create(fbtex);
+		}
+		slot.cached_static_version = UINT64_MAX; // force a static re-render into the fresh faces
+	}
+	return slot.static_cube_fb[p_face];
+}
+
+RID LightStorage::shadow_atlas_get_cached_static_cube(RID p_atlas, RID p_light_instance) {
+	ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
+	ERR_FAIL_NULL_V(atlas, RID());
+	if (!atlas->shadow_owners.has(p_light_instance)) {
+		return RID();
+	}
+	uint32_t key = atlas->shadow_owners[p_light_instance];
+	uint32_t quadrant = (key >> QUADRANT_SHIFT) & 0x3;
+	uint32_t shadow = key & SHADOW_INDEX_MASK;
+	if (shadow >= (uint32_t)atlas->quadrants[quadrant].shadows.size()) {
+		return RID();
+	}
+	return atlas->quadrants[quadrant].shadows[shadow].static_cube;
 }
 
 RID LightStorage::shadow_atlas_get_cached_static_depth(RID p_atlas, RID p_light_instance) {
@@ -3051,7 +3123,9 @@ RD::DataFormat LightStorage::get_cubemap_depth_format() {
 }
 
 uint32_t LightStorage::get_cubemap_depth_usage_bits() {
-	return RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT;
+	// CAN_COPY_TO: the AREA hemicube cache copies its per-face cached static depth into this
+	// shared working cubemap each frame before overlaying dynamic casters.
+	return RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 }
 
 bool LightStorage::get_shadow_cubemaps_used() const {
