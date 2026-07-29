@@ -442,6 +442,11 @@ private:
 			// `rect` before drawing this pass (restores the cached static depth under the dynamic overlay).
 			RID copy_src;
 			RID copy_dst;
+			// Cube layer to copy between, for the AREA hemicube cache (both sides are cubemaps and
+			// the face index is the same on each). 0 for the slot-level spot cache.
+			uint32_t copy_layer = 0;
+			// Face-sized copies use the whole texture, not an atlas sub-rect.
+			Rect2i copy_rect;
 		};
 
 		LocalVector<ShadowPass> shadow_passes;
