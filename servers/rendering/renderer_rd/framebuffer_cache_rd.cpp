@@ -56,6 +56,12 @@ void FramebufferCacheRD::_invalidate(Cache *p_cache) {
 	cache_instances_used--;
 }
 void FramebufferCacheRD::_framebuffer_invalidation_callback(void *p_userdata) {
+	// At exit, RenderingDevice::finalize() frees any surviving framebuffers after the
+	// cache singleton has already been destroyed; their invalidation callbacks still
+	// point here. There is nothing left to invalidate at that point.
+	if (unlikely(singleton == nullptr)) {
+		return;
+	}
 	singleton->_invalidate(reinterpret_cast<Cache *>(p_userdata));
 }
 
@@ -87,4 +93,5 @@ FramebufferCacheRD::~FramebufferCacheRD() {
 	if (cache_instances_used > 0) {
 		ERR_PRINT("At exit: " + itos(cache_instances_used) + " framebuffer cache instance(s) still in use.");
 	}
+	singleton = nullptr;
 }
