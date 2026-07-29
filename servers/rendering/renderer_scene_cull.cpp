@@ -1741,8 +1741,10 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		// Cached-shadow LIGHT-MOVEMENT GATE: record beyond-threshold spot movement so the cull can route
 		// a moving spot to the cheap stock path (a moving light's cached static depth is in the wrong
 		// projection; a cached MISS costs more than the stock tight-culled render). Re-caches once still.
+		// SPOT only: area lights render as a hemicube (multi-pass) and are no longer cacheable,
+		// so tracking their movement here would just be bookkeeping nothing reads.
 		const RSE::LightType __mv_type = RSG::light_storage->light_get_type(p_instance->base);
-		if (GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && (__mv_type == RSE::LIGHT_SPOT || __mv_type == RSE::LIGHT_AREA)) {
+		if (GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && __mv_type == RSE::LIGHT_SPOT) {
 			if (!light->light_transform_initialized) {
 				light->last_cached_transform = *instance_xform;
 				light->light_transform_initialized = true;
@@ -2817,85 +2819,117 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 		} break;
 		case RSE::LIGHT_AREA: {
-			if (max_shadows_used + 1 > MAX_UPDATE_SHADOWS) {
+			// HEMICUBE (fork). An area light shades the entire halfspace in front of the emitter, so
+			// its shadow has to cover a full hemisphere of directions. Stock renders that as ONE
+			// dual-paraboloid pass, and DP warps geometry PER VERTEX (see MODE_DUAL_PARABOLOID in
+			// scene_forward_*.glsl) — the rasterizer then interpolates the chord instead of the arc.
+			// Any caster subtending a wide angle (i.e. every wall of a small room) lands in the shadow
+			// map at the wrong place AND the wrong depth, so light leaks past it in razor-edged wedges.
+			// Verified: an OmniLight3D forced to SHADOW_DUAL_PARABOLOID reproduces the artifact exactly,
+			// and finely tessellating the caster makes it vanish. The warp is the bug, not the coverage.
+			//
+			// So generate the depth the way omni's CUBE mode does — exact planar projections — and then
+			// blit the front hemisphere into this light's single atlas slot with copy_cubemap_to_dp()
+			// (see _render_shadow_pass). STORAGE and SAMPLING stay dual-paraboloid, so the scene shader,
+			// the atlas layout and the volumetric-fog sampler are all untouched; only the generation
+			// changes. Cost is omni-cube's, which is why area lights are no longer cacheable below.
+			if (max_shadows_used + 6 > MAX_UPDATE_SHADOWS) {
 				return true;
 			}
-			RENDER_TIMESTAMP("Cull AreaLight3D Shadow Paraboloid");
 
 			real_t radius = RSG::light_storage->light_get_param(p_instance->base, RSE::LIGHT_PARAM_RANGE);
-			Vector2 half_size = RSG::light_storage->light_area_get_size(p_instance->base) / 2.0;
+			// Distances are measured from the light's CENTER, not from the emitting rectangle, so the
+			// far plane has to clear the rectangle too. Must agree with the renderer's `zfar` and with
+			// the shader's inv_center_range, or the blit's depth linearization decodes to the wrong
+			// range and everything self-shadows.
+			real_t center_range = radius + RSG::light_storage->light_area_get_size(p_instance->base).length() / 2.0;
+			real_t z_near = MIN(0.025f, center_range);
+			Projection cm;
+			cm.set_perspective(90, 1, z_near, center_range);
 
-			// A cached area light renders ONLY static casters; dynamic casters are excluded and overlaid
-			// per-frame (same single-pass positional shadow as a spot). p_cache_eligible was computed by
-			// the cull gate (setting + SPOT|AREA + light-movement + coverage), so the split and gate agree.
-			const bool cache_static_area = p_cache_eligible;
+			for (int i = 0; i < 6; i++) {
+				RENDER_TIMESTAMP("Cull AreaLight3D Shadow Hemicube, Side " + itos(i));
 
-			real_t z = -1;
-			Vector<Plane> planes;
-			planes.resize(6);
-			planes.write[0] = light_transform.xform(Plane(Vector3(0, 0, z), radius));
-			planes.write[1] = light_transform.xform(Plane(Vector3(1, 0, 0).normalized(), radius + half_size.x));
-			planes.write[2] = light_transform.xform(Plane(Vector3(-1, 0, 0).normalized(), radius + half_size.x));
-			planes.write[3] = light_transform.xform(Plane(Vector3(0, 1, 0).normalized(), radius + half_size.y));
-			planes.write[4] = light_transform.xform(Plane(Vector3(0, -1, 0).normalized(), radius + half_size.y));
-			planes.write[5] = light_transform.xform(Plane(Vector3(0, 0, -z), 0));
+				static const Vector3 view_normals[6] = {
+					Vector3(+1, 0, 0),
+					Vector3(-1, 0, 0),
+					Vector3(0, -1, 0),
+					Vector3(0, +1, 0),
+					Vector3(0, 0, +1),
+					Vector3(0, 0, -1)
+				};
+				static const Vector3 view_up[6] = {
+					Vector3(0, -1, 0),
+					Vector3(0, -1, 0),
+					Vector3(0, 0, -1),
+					Vector3(0, 0, +1),
+					Vector3(0, -1, 0),
+					Vector3(0, -1, 0)
+				};
 
-			instance_shadow_cull_result.clear();
+				Transform3D xform = light_transform * Transform3D().looking_at(view_normals[i], view_up[i]);
 
-			Vector<Vector3> points = Geometry3D::compute_convex_mesh_points(&planes[0], planes.size());
+				RendererSceneRender::RenderShadowData &shadow_data = render_shadow_data[max_shadows_used++];
+				shadow_data.light = light->instance;
+				shadow_data.pass = i;
+				// Multi-pass: the static-shadow cache is single-pass only (see the cull gate).
+				shadow_data.cache_static_spot = false;
+				shadow_data.cache_static_version = 0;
 
-			struct CullConvex {
-				PagedArray<Instance *> *result;
-				_FORCE_INLINE_ bool operator()(void *p_data) {
-					Instance *p_instance = (Instance *)p_data;
-					result->push_back(p_instance);
-					return false;
-				}
-			};
+				RSG::light_storage->light_instance_set_shadow_transform(light->instance, cm, xform, center_range, 0, i, 0);
 
-			CullConvex cull_convex;
-			cull_convex.result = &instance_shadow_cull_result;
-
-			p_scenario->indexers[Scenario::INDEXER_GEOMETRY].convex_query(planes.ptr(), planes.size(), points.ptr(), points.size(), cull_convex);
-
-			RendererSceneRender::RenderShadowData &shadow_data = render_shadow_data[max_shadows_used++];
-
-			if (!light->is_shadow_update_full()) {
-				light_culler->cull_regular_light(instance_shadow_cull_result);
-			}
-
-			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
-				Instance *instance = instance_shadow_cull_result[j];
-				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
+				// Face 4 looks along +Z — straight out the BACK of the emitter, where the light shades
+				// nothing. Keep the pass (it clears the face) but skip the query: dropping the pass
+				// would leave the previous light's depth in the shared cubemap, which PCF taps near the
+				// paraboloid rim can still reach.
+				if (i == 4) {
 					continue;
-				} else {
-					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
-						animated_material_found = true;
-					}
-
-					if (instance->mesh_instance.is_valid()) {
-						RSG::mesh_storage->mesh_instance_check_for_update(instance->mesh_instance);
-					}
 				}
 
-				// Approach A split: a cached area light caches STATIC casters (instances) and overlays
-				// DYNAMIC casters per-frame (dynamic_instances), exactly like the spot case above.
-				InstanceGeometryData *area_geom = static_cast<InstanceGeometryData *>(instance->base_data);
-				if (cache_static_area && (!area_geom->can_cast_static_shadows || area_geom->auto_demoted_dynamic)) {
-					shadow_data.dynamic_instances.push_back(area_geom->geometry_instance);
-				} else {
-					shadow_data.instances.push_back(area_geom->geometry_instance);
+				Vector<Plane> planes = cm.get_projection_planes(xform);
+
+				instance_shadow_cull_result.clear();
+
+				Vector<Vector3> points = Geometry3D::compute_convex_mesh_points(&planes[0], planes.size());
+
+				struct CullConvex {
+					PagedArray<Instance *> *result;
+					_FORCE_INLINE_ bool operator()(void *p_data) {
+						Instance *p_instance = (Instance *)p_data;
+						result->push_back(p_instance);
+						return false;
+					}
+				};
+
+				CullConvex cull_convex;
+				cull_convex.result = &instance_shadow_cull_result;
+
+				p_scenario->indexers[Scenario::INDEXER_GEOMETRY].convex_query(planes.ptr(), planes.size(), points.ptr(), points.size(), cull_convex);
+
+				if (!light->is_shadow_update_full()) {
+					light_culler->cull_regular_light(instance_shadow_cull_result);
 				}
+
+				for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
+					Instance *instance = instance_shadow_cull_result[j];
+					if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
+						continue;
+					} else {
+						if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
+							animated_material_found = true;
+						}
+
+						if (instance->mesh_instance.is_valid()) {
+							RSG::mesh_storage->mesh_instance_check_for_update(instance->mesh_instance);
+						}
+					}
+
+					shadow_data.instances.push_back(static_cast<InstanceGeometryData *>(instance->base_data)->geometry_instance);
+				}
+
+				RSG::mesh_storage->update_mesh_instances();
 			}
-
-			RSG::mesh_storage->update_mesh_instances();
-
-			RSG::light_storage->light_instance_set_shadow_transform(light->instance, Projection(), light_transform, radius, 0, 0, 0);
-			shadow_data.light = light->instance;
-			shadow_data.pass = 0;
-			shadow_data.cache_static_spot = cache_static_area;
-			shadow_data.cache_static_version = light->static_version;
-		}
+		} break;
 	}
 
 	return animated_material_found;
@@ -3878,11 +3912,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// moved recently is not cacheable -> falls through to the stock dirty-gated path below.
 			// Screen-coverage gate: skip caching for spots smaller than min_coverage (default 0 = no gate)
 			// so off-screen / tiny lights take the stock path instead of paying a camera-independent miss.
-			// Cache covers single-pass POSITIONAL shadows (spot + area). Omni renders multi-pass
-			// cube/paraboloid into the slot and is deliberately excluded (legacy per-frame path).
+			// Cache covers single-pass POSITIONAL shadows, which now means SPOT only. Omni renders
+			// multi-pass cube/paraboloid into the slot and has always been excluded; AREA joined it
+			// when area shadows moved to the hemicube path (_light_instance_update_shadow) to stop
+			// dual-paraboloid vertex warp leaking light through walls. Re-admitting area here would
+			// cache one of six passes and overlay dynamic casters onto a face that is about to be
+			// overwritten by the cubemap->DP blit.
 			const RSE::LightType __cache_type = RSG::light_storage->light_get_type(ins->base);
 			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows")
-					&& (__cache_type == RSE::LIGHT_SPOT || __cache_type == RSE::LIGHT_AREA)
+					&& __cache_type == RSE::LIGHT_SPOT
 					&& light->is_light_cacheable(Engine::get_singleton()->get_frames_drawn(), (uint32_t)GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_light_still_cooldown_frames"))
 					&& coverage >= (real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_min_coverage");
 

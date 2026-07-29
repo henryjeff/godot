@@ -2655,6 +2655,9 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 	bool reverse_cull_face = light_storage->light_get_reverse_cull_face_mode(base);
 	bool using_dual_paraboloid = false;
 	bool using_dual_paraboloid_flip = false;
+	// Area lights render a cubemap but occupy only ONE atlas slot (a single front hemisphere), so the
+	// finalize step blits once instead of omni's front+back pair.
+	bool area_hemicube = false;
 	Vector2i dual_paraboloid_offset;
 	RID render_fb;
 	RID render_texture;
@@ -2792,19 +2795,32 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 
 			flip_y = true;
 		} else if (light_storage->light_get_type(base) == RSE::LIGHT_AREA) {
+			// HEMICUBE (fork): area shadows are GENERATED as cube faces (exact planar projection) and
+			// STORED as a single front-hemisphere paraboloid, so the scene shader keeps sampling one
+			// atlas rect exactly as before. Rendering them as a dual-paraboloid pass instead warps the
+			// casters per vertex and leaks light through walls -- see the LIGHT_AREA case in
+			// RendererSceneCull::_light_instance_update_shadow for the full write-up.
 			Vector2 area_size = light_storage->light_area_get_size(base);
 
+			// Must match the cull's `center_range` and the shader's inv_center_range.
 			zfar = light_storage->light_get_param(base, RSE::LIGHT_PARAM_RANGE) + area_size.length() / 2.0;
 
-			light_transform = light_storage->light_instance_get_shadow_transform(p_light, 0);
+			render_texture = light_storage->get_cubemap(shadow_size / 2);
+			render_fb = light_storage->get_cubemap_fb(shadow_size / 2, p_pass);
 
-			light_projection = light_storage->light_instance_get_shadow_camera(p_light, 0);
+			light_projection = light_storage->light_instance_get_shadow_camera(p_light, p_pass);
+			light_transform = light_storage->light_instance_get_shadow_transform(p_light, p_pass);
 
-			render_fb = light_storage->shadow_atlas_get_fb(p_shadow_atlas);
+			render_cubemap = true;
+			finalize_cubemap = p_pass == 5;
+			// One hemisphere, one slot: unlike omni there is no second (flipped) paraboloid region.
+			area_hemicube = true;
+			atlas_fb = light_storage->shadow_atlas_get_fb(p_shadow_atlas);
+			atlas_size = shadow_atlas_size;
 
-			flip_y = true;
-
-			using_dual_paraboloid = true;
+			if (p_pass == 0) {
+				_render_shadow_begin();
+			}
 		}
 	}
 
@@ -2818,9 +2834,14 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 			Rect2 atlas_rect_norm = atlas_rect;
 			atlas_rect_norm.position /= float(atlas_size);
 			atlas_rect_norm.size /= float(atlas_size);
+			// dp_flip = false writes the light-local -Z hemisphere, which is the region the scene
+			// shader reads from the BASE atlas rect (omni adds flip_offset for the +Z half). For an
+			// area light that is exactly the halfspace it shades, so one blit is the whole shadow.
 			copy_effects->copy_cubemap_to_dp(render_texture, atlas_fb, atlas_rect_norm, atlas_rect.size, light_projection.get_z_near(), zfar, false);
-			atlas_rect_norm.position += Vector2(dual_paraboloid_offset) * atlas_rect_norm.size;
-			copy_effects->copy_cubemap_to_dp(render_texture, atlas_fb, atlas_rect_norm, atlas_rect.size, light_projection.get_z_near(), zfar, true);
+			if (!area_hemicube) {
+				atlas_rect_norm.position += Vector2(dual_paraboloid_offset) * atlas_rect_norm.size;
+				copy_effects->copy_cubemap_to_dp(render_texture, atlas_fb, atlas_rect_norm, atlas_rect.size, light_projection.get_z_near(), zfar, true);
+			}
 
 			//restore transform so it can be properly used
 			light_storage->light_instance_set_shadow_transform(p_light, Projection(), light_storage->light_instance_get_base_transform(p_light), zfar, 0, 0, 0);
