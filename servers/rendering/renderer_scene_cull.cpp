@@ -1741,10 +1741,8 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		// Cached-shadow LIGHT-MOVEMENT GATE: record beyond-threshold spot movement so the cull can route
 		// a moving spot to the cheap stock path (a moving light's cached static depth is in the wrong
 		// projection; a cached MISS costs more than the stock tight-culled render). Re-caches once still.
-		// SPOT only: area lights render as a hemicube (multi-pass) and are no longer cacheable,
-		// so tracking their movement here would just be bookkeeping nothing reads.
 		const RSE::LightType __mv_type = RSG::light_storage->light_get_type(p_instance->base);
-		if (GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && __mv_type == RSE::LIGHT_SPOT) {
+		if (GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows") && (__mv_type == RSE::LIGHT_SPOT || __mv_type == RSE::LIGHT_AREA)) {
 			if (!light->light_transform_initialized) {
 				light->last_cached_transform = *instance_xform;
 				light->light_transform_initialized = true;
@@ -2847,6 +2845,11 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			Projection cm;
 			cm.set_perspective(90, 1, z_near, center_range);
 
+			// A cached area light renders ONLY static casters into its cached cube faces; dynamic
+			// casters are excluded and overlaid per-frame. p_cache_eligible was computed by the cull
+			// gate, so the split and the gate cannot disagree.
+			const bool cache_static_area = p_cache_eligible;
+
 			for (int i = 0; i < 6; i++) {
 				RENDER_TIMESTAMP("Cull AreaLight3D Shadow Hemicube, Side " + itos(i));
 
@@ -2872,9 +2875,11 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 				RendererSceneRender::RenderShadowData &shadow_data = render_shadow_data[max_shadows_used++];
 				shadow_data.light = light->instance;
 				shadow_data.pass = i;
-				// Multi-pass: the static-shadow cache is single-pass only (see the cull gate).
-				shadow_data.cache_static_spot = false;
-				shadow_data.cache_static_version = 0;
+				// Cacheable, but one level down from the spot cache: the cubemap->DP blit owns the
+				// atlas slot, so the cached static depth lives on the cube FACES instead. Same
+				// static/dynamic caster split as a spot, applied per face. See _render_shadow_pass.
+				shadow_data.cache_static_spot = cache_static_area;
+				shadow_data.cache_static_version = light->static_version;
 
 				RSG::light_storage->light_instance_set_shadow_transform(light->instance, cm, xform, center_range, 0, i, 0);
 
@@ -2924,7 +2929,12 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 						}
 					}
 
-					shadow_data.instances.push_back(static_cast<InstanceGeometryData *>(instance->base_data)->geometry_instance);
+					InstanceGeometryData *area_geom = static_cast<InstanceGeometryData *>(instance->base_data);
+					if (cache_static_area && (!area_geom->can_cast_static_shadows || area_geom->auto_demoted_dynamic)) {
+						shadow_data.dynamic_instances.push_back(area_geom->geometry_instance);
+					} else {
+						shadow_data.instances.push_back(area_geom->geometry_instance);
+					}
 				}
 
 				RSG::mesh_storage->update_mesh_instances();
@@ -3912,15 +3922,13 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// moved recently is not cacheable -> falls through to the stock dirty-gated path below.
 			// Screen-coverage gate: skip caching for spots smaller than min_coverage (default 0 = no gate)
 			// so off-screen / tiny lights take the stock path instead of paying a camera-independent miss.
-			// Cache covers single-pass POSITIONAL shadows, which now means SPOT only. Omni renders
-			// multi-pass cube/paraboloid into the slot and has always been excluded; AREA joined it
-			// when area shadows moved to the hemicube path (_light_instance_update_shadow) to stop
-			// dual-paraboloid vertex warp leaking light through walls. Re-admitting area here would
-			// cache one of six passes and overlay dynamic casters onto a face that is about to be
-			// overwritten by the cubemap->DP blit.
+			// Cache covers SPOT (single-pass, cached at the atlas slot) and AREA (hemicube, cached
+			// one level down at the cube FACES -- the cubemap->DP blit owns the slot, so the slot
+			// itself cannot hold staged depth). Omni renders multi-pass into the slot and is still
+			// deliberately excluded (legacy per-frame path); it could adopt the same per-face cache.
 			const RSE::LightType __cache_type = RSG::light_storage->light_get_type(ins->base);
 			const bool cache_static_spot = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/cache_static_spot_shadows")
-					&& __cache_type == RSE::LIGHT_SPOT
+					&& (__cache_type == RSE::LIGHT_SPOT || __cache_type == RSE::LIGHT_AREA)
 					&& light->is_light_cacheable(Engine::get_singleton()->get_frames_drawn(), (uint32_t)GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_light_still_cooldown_frames"))
 					&& coverage >= (real_t)GLOBAL_GET_CACHED(double, "rendering/lights_and_shadows/cache_static_spot_min_coverage");
 

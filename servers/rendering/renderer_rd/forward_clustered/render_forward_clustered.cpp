@@ -2658,6 +2658,8 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 	// Area lights render a cubemap but occupy only ONE atlas slot (a single front hemisphere), so the
 	// finalize step blits once instead of omni's front+back pair.
 	bool area_hemicube = false;
+	// Cube face resolution, needed after the atlas block closes (for the per-face cache copy).
+	uint32_t area_face_size = 0;
 	Vector2i dual_paraboloid_offset;
 	RID render_fb;
 	RID render_texture;
@@ -2815,6 +2817,7 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 			finalize_cubemap = p_pass == 5;
 			// One hemisphere, one slot: unlike omni there is no second (flipped) paraboloid region.
 			area_hemicube = true;
+			area_face_size = shadow_size / 2;
 			atlas_fb = light_storage->shadow_atlas_get_fb(p_shadow_atlas);
 			atlas_size = shadow_atlas_size;
 
@@ -2825,8 +2828,62 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 	}
 
 	if (render_cubemap) {
-		//rendering to cubemap
-		_render_shadow_append(render_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2(), false, true, true, true, p_render_info, p_viewport_size, p_main_cam_transform);
+		// AREA hemicube + static-shadow cache: the slot-level cache can't be used here (the
+		// cubemap->DP blit at finalize overwrites the slot), so the cache lives one level down, on
+		// the cube FACES. Per face: render the static casters into this light's cached face only
+		// when its static_version changed, copy that cached face into the shared working cubemap,
+		// then overlay the dynamic casters with depth LOAD. The blit then runs as usual and sees
+		// static+dynamic. Same shape as the spot path, one level deeper.
+		//
+		// Deliberately NOT subject to cache_static_spot_max_rebuilds_per_frame: that budget defers
+		// a rebuild to a later frame, and deferring only SOME of a light's six faces would leave the
+		// cube internally inconsistent while the version gets committed as clean. Area lights are
+		// few; a burst is cheaper than that failure mode.
+		const int area_cache_debug = area_hemicube && p_cache_static_spot ? GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/cache_static_spot_shadows_debug") : 0;
+		if (area_hemicube && p_cache_static_spot && area_cache_debug != 1 && area_cache_debug != 2) {
+			const uint32_t face_size = area_face_size;
+			RID cached_fb = light_storage->shadow_atlas_get_cached_static_cube_fb(p_shadow_atlas, p_light, p_pass);
+			RID cached_cube = light_storage->shadow_atlas_get_cached_static_cube(p_shadow_atlas, p_light);
+			if (cached_fb.is_valid() && cached_cube.is_valid() && face_size > 0) {
+				// PEEK on every face so all six agree; COMMIT only on the last one, after the whole
+				// cube has actually been rebuilt.
+				if (light_storage->shadow_atlas_cached_static_take_dirty(p_shadow_atlas, p_light, p_cache_static_version, false)) {
+					if (p_pass == 0) {
+						g_static_rebuilds_this_frame++;
+						g_shadow_cache_rerender++; // DIAGNOSTIC: static_version changed -> full static re-render
+					}
+					_render_shadow_append(cached_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2(), false, true, false, false, p_render_info, p_viewport_size, p_main_cam_transform);
+					if (p_pass == 5) {
+						light_storage->shadow_atlas_cached_static_take_dirty(p_shadow_atlas, p_light, p_cache_static_version, true); // commit
+					}
+				} else if (p_pass == 0) {
+					g_shadow_cache_hit++; // DIAGNOSTIC: cache hit -> only dynamic overlay + face copy
+				}
+				// p_begin MUST be false: _render_shadow_append sets clear_depth = p_begin ||
+				// p_clear_region, so a `true` here would clear the working face and throw away the
+				// cached static depth that was just copied into it. The overlay has to LOAD.
+				const PagedArray<RenderGeometryInstance *> &dyn = p_dynamic_instances ? *p_dynamic_instances : p_instances;
+				_render_shadow_append(render_fb, dyn, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2(), false, false, false, true, p_render_info, p_viewport_size, p_main_cam_transform);
+				if (scene_state.shadow_passes.size() > 0) {
+					SceneState::ShadowPass &dyn_pass = scene_state.shadow_passes[scene_state.shadow_passes.size() - 1];
+					dyn_pass.copy_src = cached_cube;
+					dyn_pass.copy_dst = render_texture;
+					dyn_pass.copy_layer = (uint32_t)p_pass;
+					dyn_pass.copy_rect = Rect2i(0, 0, (int)face_size, (int)face_size);
+				}
+			} else {
+				g_shadow_cache_miss_fb++; // DIAGNOSTIC: cached cube invalid -> full render into the working face
+				_render_shadow_append(render_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2(), false, true, true, true, p_render_info, p_viewport_size, p_main_cam_transform);
+			}
+		} else if (area_cache_debug == 1 || area_cache_debug == 2) {
+			// DEBUG isolate view: static-only (1) or dynamic-only (2), rendered straight into the
+			// working face with a clear, so toggling shows which shadows come from which set.
+			const PagedArray<RenderGeometryInstance *> &dbg = (area_cache_debug == 2 && p_dynamic_instances) ? *p_dynamic_instances : p_instances;
+			_render_shadow_append(render_fb, dbg, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2(), false, true, true, true, p_render_info, p_viewport_size, p_main_cam_transform);
+		} else {
+			//rendering to cubemap
+			_render_shadow_append(render_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, false, false, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, Rect2(), false, true, true, true, p_render_info, p_viewport_size, p_main_cam_transform);
+		}
 		if (finalize_cubemap) {
 			_render_shadow_process();
 			_render_shadow_end();
@@ -3010,8 +3067,11 @@ void RenderForwardClustered::_render_shadow_end() {
 
 	for (SceneState::ShadowPass &shadow_pass : scene_state.shadow_passes) {
 		if (shadow_pass.copy_src.is_valid() && shadow_pass.copy_dst.is_valid()) {
-			// Approach A: restore the cached static depth into the atlas slot before the dynamic overlay draw.
-			RD::get_singleton()->texture_copy(shadow_pass.copy_src, shadow_pass.copy_dst, Vector3(0, 0, 0), Vector3(shadow_pass.rect.position.x, shadow_pass.rect.position.y, 0), Vector3(shadow_pass.rect.size.width, shadow_pass.rect.size.height, 1), 0, 0, 0, 0);
+			// Approach A: restore the cached static depth before the dynamic overlay draw.
+			// Spot: cached slot depth -> the atlas slot at shadow_pass.rect, layer 0.
+			// Area: cached cube face -> the working cubemap's same face, whole-texture copy.
+			const Rect2i &cr = shadow_pass.copy_rect.size.width > 0 ? shadow_pass.copy_rect : shadow_pass.rect;
+			RD::get_singleton()->texture_copy(shadow_pass.copy_src, shadow_pass.copy_dst, Vector3(0, 0, 0), Vector3(cr.position.x, cr.position.y, 0), Vector3(cr.size.width, cr.size.height, 1), 0, 0, shadow_pass.copy_layer, shadow_pass.copy_layer);
 		}
 		RenderListParameters render_list_parameters(render_list[RENDER_LIST_SECONDARY].elements.ptr() + shadow_pass.element_from, render_list[RENDER_LIST_SECONDARY].element_info.ptr() + shadow_pass.element_from, shadow_pass.element_count, shadow_pass.flip_cull, shadow_pass.pass_mode, 0, true, false, shadow_pass.rp_uniform_set, false, Vector2(), shadow_pass.lod_distance_multiplier, shadow_pass.screen_mesh_lod_threshold, 1, shadow_pass.element_from);
 		_render_list_with_draw_list(&render_list_parameters, shadow_pass.framebuffer, shadow_pass.clear_depth ? RD::DRAW_CLEAR_DEPTH : RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0, shadow_pass.rect);
