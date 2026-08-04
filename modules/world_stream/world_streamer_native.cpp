@@ -24,6 +24,15 @@ static inline int64_t make_key(int p_tx, int p_tz, int p_depth, int p_ix, int p_
 	return (int64_t)p_depth | ((int64_t)p_ix << 4) | ((int64_t)p_iz << 12) | (((int64_t)p_tz + KEY_BIAS) << 20) | (((int64_t)p_tx + KEY_BIAS) << 40);
 }
 
+// WorldStreamer.decode — same bit layout, unpacked.
+static inline void decode_key(int64_t p_key, int &r_tx, int &r_tz, int &r_depth, int &r_ix, int &r_iz) {
+	r_tx = (int)((p_key >> 40) & 0xFFFFF) - (int)KEY_BIAS;
+	r_tz = (int)((p_key >> 20) & 0xFFFFF) - (int)KEY_BIAS;
+	r_depth = (int)(p_key & 0xF);
+	r_ix = (int)((p_key >> 4) & 0xFF);
+	r_iz = (int)((p_key >> 12) & 0xFF);
+}
+
 // --- WorldStreamJob -----------------------------------------------------------
 
 // Worker-thread body. Duck-calls the layer's build_leaf exactly as the
@@ -77,6 +86,9 @@ void WorldStreamerNative::_bind_methods() {
 			&WorldStreamerNative::note_attached);
 	ClassDB::bind_method(D_METHOD("note_detached", "layer", "key"),
 			&WorldStreamerNative::note_detached);
+	ClassDB::bind_method(D_METHOD("reconcile_plan", "cam", "ctx", "ctz",
+								 "tile_radius", "max_applies"),
+			&WorldStreamerNative::reconcile_plan);
 	ClassDB::bind_method(D_METHOD("total_jobs"), &WorldStreamerNative::total_jobs);
 	ClassDB::bind_method(D_METHOD("job_count", "layer"),
 			&WorldStreamerNative::job_count);
@@ -252,6 +264,11 @@ PackedInt64Array WorldStreamerNative::collect_impl(int p_layer, const PackedInt3
 	a.record_desired = p_record_desired;
 	if (p_record_desired) {
 		a.maps->desired.clear();
+		// The reconcile planner walks with the SAME band and resolved radius
+		// this cut ran under.
+		a.maps->band_lo = p_band_lo;
+		a.maps->band_hi = p_band_hi;
+		a.maps->radius = p_radius;
 	}
 	for (int t = 0; t + 1 < p_tiles.size(); t += 2) {
 		collect_node(a, p_tiles[t], p_tiles[t + 1], 0, 0, 0);
@@ -400,7 +417,7 @@ Dictionary WorldStreamerNative::drain() {
 			if (!m.cache.has(key)) {
 				m.cache_order.push_back(key);
 			}
-			m.cache.insert(key);
+			m.cache.insert(key, true);
 			Array row;
 			row.push_back((int)li);
 			row.push_back(key);
@@ -446,7 +463,7 @@ void WorldStreamerNative::note_attached(int p_layer, int64_t p_key) {
 		m.cache_order.remove_at(at);
 		m.cache_order.push_back(p_key);
 	}
-	m.active.insert(p_key);
+	m.active.insert(p_key, true);
 }
 
 void WorldStreamerNative::note_detached(int p_layer, int64_t p_key) {
@@ -528,8 +545,8 @@ PackedInt64Array WorldStreamerNative::cache_keys(int p_layer) const {
 	if (p_layer < 0 || p_layer >= (int)layers.size()) {
 		return out;
 	}
-	for (const int64_t &key : layers[(uint32_t)p_layer].cache) {
-		out.push_back(key);
+	for (const KeyValue<int64_t, bool> &kv : layers[(uint32_t)p_layer].cache) {
+		out.push_back(kv.key);
 	}
 	return out;
 }
@@ -539,8 +556,213 @@ PackedInt64Array WorldStreamerNative::active_keys(int p_layer) const {
 	if (p_layer < 0 || p_layer >= (int)layers.size()) {
 		return out;
 	}
-	for (const int64_t &key : layers[(uint32_t)p_layer].active) {
-		out.push_back(key);
+	for (const KeyValue<int64_t, bool> &kv : layers[(uint32_t)p_layer].active) {
+		out.push_back(kv.key);
 	}
+	return out;
+}
+
+// --- M3: the reconcile planner ------------------------------------------------
+
+// WorldStreamer._all_cached / _desired_ancestor / _has_active_ancestor /
+// _collect_desired_under / _collect_active_under — semantics ported exactly;
+// see the GDScript for the archaeology (the past-the-render-cut-counts-as-
+// covered rule and the pin-the-parent-forever bug it fixes).
+
+bool WorldStreamerNative::collect_desired_under(const LayerMaps &p_m, int p_tx,
+		int p_tz, int p_depth, int p_ix, int p_iz, LocalVector<int64_t> &r_out,
+		const Vector3 &p_cam) const {
+	if (p_depth >= p_m.band_hi) {
+		return false;
+	}
+	double cut = p_m.radius;
+	bool full = true;
+	for (int cz = 0; cz < 2; cz++) {
+		for (int cx = 0; cx < 2; cx++) {
+			int cd = p_depth + 1;
+			int cix = p_ix * 2 + cx;
+			int ciz = p_iz * 2 + cz;
+			int64_t ck = make_key(p_tx, p_tz, cd, cix, ciz);
+			if (p_m.desired.has(ck)) {
+				r_out.push_back(ck);
+			} else if (cut > 0.0 && rect_dist(p_tx, p_tz, cd, cix, ciz, p_cam) > cut) {
+				continue; // legitimately empty, not missing
+			} else if (!collect_desired_under(p_m, p_tx, p_tz, cd, cix, ciz, r_out, p_cam)) {
+				full = false;
+			}
+		}
+	}
+	return full;
+}
+
+void WorldStreamerNative::collect_active_under(const HashMap<int64_t, bool> &p_act,
+		int p_band_hi, int p_tx, int p_tz, int p_depth, int p_ix, int p_iz,
+		LocalVector<int64_t> &r_out) const {
+	if (p_depth >= p_band_hi) {
+		return;
+	}
+	for (int cz = 0; cz < 2; cz++) {
+		for (int cx = 0; cx < 2; cx++) {
+			int cd = p_depth + 1;
+			int cix = p_ix * 2 + cx;
+			int ciz = p_iz * 2 + cz;
+			int64_t ck = make_key(p_tx, p_tz, cd, cix, ciz);
+			if (p_act.has(ck)) {
+				r_out.push_back(ck);
+			} else {
+				collect_active_under(p_act, p_band_hi, p_tx, p_tz, cd, cix, ciz, r_out);
+			}
+		}
+	}
+}
+
+Dictionary WorldStreamerNative::reconcile_plan(const Vector3 &p_cam, int p_ctx,
+		int p_ctz, int p_tile_radius, int p_max_applies) {
+	Array actions;
+	bool hungry = false;
+	int applied = 0;
+	for (uint32_t li = 0; li < layers.size(); li++) {
+		LayerMaps &m = layers[li];
+		// TEMP overlay — planning never touches the real ledgers. Built by
+		// insertion (HashMap is not copy-constructible), which also carries
+		// the insertion order the pass-1 walk depends on.
+		HashMap<int64_t, bool> act;
+		act.reserve(MAX(1u, (uint32_t)m.active.size()));
+		for (const KeyValue<int64_t, bool> &kv : m.active) {
+			act.insert(kv.key, true);
+		}
+		// Pass 1 — SPLITs (active leaf replaced by a finer desired subtree) +
+		// drop leaves whose tile scrolled out of range. Snapshot the keys the
+		// way keys() did: culls/detaches must not disturb the walk.
+		LocalVector<int64_t> akeys;
+		for (const KeyValue<int64_t, bool> &kv : act) {
+			akeys.push_back(kv.key);
+		}
+		for (uint32_t i = 0; i < akeys.size(); i++) {
+			int64_t key = akeys[i];
+			int tx, tz, depth, ix, iz;
+			decode_key(key, tx, tz, depth, ix, iz);
+			if (Math::abs(tx - p_ctx) > p_tile_radius || Math::abs(tz - p_ctz) > p_tile_radius) {
+				Array row;
+				row.push_back(0); // cull
+				row.push_back((int)li);
+				row.push_back(key);
+				actions.push_back(row);
+				act.erase(key);
+				continue;
+			}
+			if (m.desired.has(key)) {
+				continue;
+			}
+			// Walk up for a desired ancestor — that is a MERGE (pass 2's job).
+			{
+				bool has_anc = false;
+				int d = depth - 1;
+				int ax = ix >> 1;
+				int az = iz >> 1;
+				while (d >= 0) {
+					if (m.desired.has(make_key(tx, tz, d, ax, az))) {
+						has_anc = true;
+						break;
+					}
+					ax >>= 1;
+					az >>= 1;
+					d -= 1;
+				}
+				if (has_anc) {
+					continue;
+				}
+			}
+			if (applied >= p_max_applies) {
+				hungry = true;
+				continue;
+			}
+			LocalVector<int64_t> subs;
+			bool full = collect_desired_under(m, tx, tz, depth, ix, iz, subs, p_cam);
+			if (full && subs.size() > 0) {
+				bool all_cached = true;
+				for (uint32_t s = 0; s < subs.size(); s++) {
+					if (!m.cache.has(subs[s])) {
+						all_cached = false;
+						break;
+					}
+				}
+				if (all_cached) {
+					PackedInt64Array ps;
+					for (uint32_t s = 0; s < subs.size(); s++) {
+						ps.push_back(subs[s]);
+						act.insert(subs[s], true);
+					}
+					act.erase(key);
+					Array row;
+					row.push_back(1); // split
+					row.push_back((int)li);
+					row.push_back(key);
+					row.push_back(ps);
+					actions.push_back(row);
+					applied += 1;
+				}
+			}
+		}
+		// Pass 2 — MERGEs (desired ancestor replaces its active descendants) +
+		// FRESH desired leaves attaching into empty area. Desired iterates in
+		// insertion (= recursion) order, exactly the authority's dict walk.
+		for (const KeyValue<int64_t, DesiredInfo> &kv : m.desired) {
+			int64_t dkey = kv.key;
+			if (applied >= p_max_applies) {
+				hungry = true;
+				break;
+			}
+			if (act.has(dkey) || !m.cache.has(dkey)) {
+				continue;
+			}
+			const DesiredInfo &d = kv.value;
+			LocalVector<int64_t> descs;
+			collect_active_under(act, m.band_hi, d.tx, d.tz, d.depth, d.ix, d.iz, descs);
+			if (descs.size() > 0) {
+				PackedInt64Array ps;
+				for (uint32_t s = 0; s < descs.size(); s++) {
+					ps.push_back(descs[s]);
+					act.erase(descs[s]);
+				}
+				act.insert(dkey, true);
+				Array row;
+				row.push_back(2); // merge
+				row.push_back((int)li);
+				row.push_back(dkey);
+				row.push_back(ps);
+				actions.push_back(row);
+				applied += 1;
+			} else {
+				bool anc_active = false;
+				int ad = d.depth - 1;
+				int ax = d.ix >> 1;
+				int az = d.iz >> 1;
+				while (ad >= 0) {
+					if (act.has(make_key(d.tx, d.tz, ad, ax, az))) {
+						anc_active = true;
+						break;
+					}
+					ax >>= 1;
+					az >>= 1;
+					ad -= 1;
+				}
+				if (!anc_active) {
+					act.insert(dkey, true);
+					Array row;
+					row.push_back(3); // fill
+					row.push_back((int)li);
+					row.push_back(dkey);
+					actions.push_back(row);
+					applied += 1;
+				}
+				// else: an active ancestor still covers this leaf — mid-split,
+				// waiting on its siblings; attaching now would overlap.
+			}
+		}
+	}
+	Dictionary out;
+	out["actions"] = actions;
+	out["hungry"] = hungry;
 	return out;
 }

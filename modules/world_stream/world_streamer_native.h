@@ -8,7 +8,6 @@
 
 #include "core/object/worker_thread_pool.h"
 #include "core/templates/hash_map.h"
-#include "core/templates/hash_set.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/node_3d.h"
 
@@ -98,10 +97,23 @@ public:
 	// delta the GDScript payload dict applies.
 	Dictionary drain();
 
-	// Active-set ledger, maintained by the GDScript reconcile until M3 moves
-	// it in. note_attached also LRU-touches the key (the _attach contract).
+	// Active-set ledger, mutated ONLY here as the GDScript executor applies
+	// planned actions. note_attached also LRU-touches the key (the _attach
+	// contract).
 	void note_attached(int p_layer, int64_t p_key);
 	void note_detached(int p_layer, int64_t p_key);
+
+	// M3 — the reconcile PLANNER: walks active/desired/cache and returns the
+	// ordered action list { "actions": [[op, layer, key, subs], ...],
+	// "hungry": bool } for the GDScript executor (which owns the layer hooks,
+	// the transition audit, and the TIME budget; the count budget lives here).
+	// Ops: 0 = cull, 1 = split (subs attach, key detaches), 2 = merge (key
+	// attaches, subs detach), 3 = fill. Planning mutates a TEMP overlay of the
+	// active set, never the ledgers — a budget-truncated executor therefore
+	// cannot drift them; the real mutations arrive via note_attached/detached
+	// as each action lands.
+	Dictionary reconcile_plan(const Vector3 &p_cam, int p_ctx, int p_ctz,
+			int p_tile_radius, int p_max_applies);
 
 	int total_jobs() const;
 	int job_count(int p_layer) const;
@@ -130,15 +142,24 @@ private:
 		int ix = 0;
 		int iz = 0;
 	};
+	// active/cache are HashMap<int64_t, bool>, NOT HashSet: Godot's HashMap
+	// iterates in INSERTION order, which is what makes the planner's pass-1
+	// walk order identical to the GDScript authority iterating its Dictionary
+	// — attach/detach ORDER is a parity surface, not an accident.
 	struct LayerMaps {
 		Variant layer;
 		HashMap<int64_t, Bounds> bounds;
 		HashMap<int64_t, float> child_err;
 		HashMap<int64_t, DesiredInfo> desired;
 		HashMap<int64_t, Ref<WorldStreamJob>> jobs;
-		HashSet<int64_t> active;
-		HashSet<int64_t> cache;
+		HashMap<int64_t, bool> active;
+		HashMap<int64_t, bool> cache;
 		LocalVector<int64_t> cache_order;
+		// Stashed from the last collect_apply (band + the RESOLVED radius) —
+		// the planner's tree walks need them without duck-calling the layer.
+		int band_lo = 0;
+		int band_hi = 0;
+		double radius = 0.0;
 		int last_missing = 0;
 		int last_plan_wait = 0;
 	};
@@ -167,4 +188,9 @@ private:
 			int p_band_lo, int p_band_hi, bool p_record_desired);
 	double rect_dist(int p_tx, int p_tz, int p_depth, int p_ix, int p_iz, const Vector3 &p_cam) const;
 	void submit(int p_layer, int64_t p_key, const Variant &p_plan_store);
+	bool collect_desired_under(const LayerMaps &p_m, int p_tx, int p_tz, int p_depth,
+			int p_ix, int p_iz, LocalVector<int64_t> &r_out, const Vector3 &p_cam) const;
+	void collect_active_under(const HashMap<int64_t, bool> &p_act, int p_band_hi,
+			int p_tx, int p_tz, int p_depth, int p_ix, int p_iz,
+			LocalVector<int64_t> &r_out) const;
 };
