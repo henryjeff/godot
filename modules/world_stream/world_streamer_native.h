@@ -80,10 +80,19 @@ public:
 			int p_band_lo, int p_band_hi);
 	// The machine's recollect: same cut, but REPLACES the layer's native
 	// desired ledger (coords recorded during the recursion, no decode).
+	// Returns ONLY keys never desired before on this layer (the stamped set —
+	// mirrors the GDScript desired_ms first-wanted semantics), so the caller
+	// stamps a handful of new keys instead of re-walking the whole cut.
 	PackedInt64Array collect_apply(int p_layer, const PackedInt32Array &p_tiles,
 			const Vector3 &p_cam, const Vector3 &p_cam_true, double p_px_scale,
 			double p_err_threshold, double p_split_factor, double p_radius,
 			int p_band_lo, int p_band_hi);
+	int desired_count(int p_layer) const;
+	// Active keys within `radius` of `cam`, NEAREST-FIRST — serves the layers'
+	// want-set scans (collision rings) in one call instead of a key_rect_dist
+	// round-trip per active leaf per frame.
+	PackedInt64Array active_keys_within(int p_layer, const Vector3 &p_cam,
+			double p_radius) const;
 
 	// Submit worker builds for every desired leaf without a payload (not
 	// cached, not active, not in flight), nearest-first, into the shared
@@ -151,6 +160,10 @@ private:
 		HashMap<int64_t, Bounds> bounds;
 		HashMap<int64_t, float> child_err;
 		HashMap<int64_t, DesiredInfo> desired;
+		// Every key EVER desired since the last clear — the first-wanted
+		// stamp filter (GDScript desired_ms semantics: flush persistence is
+		// the caller's business, this just says "new to this layer").
+		HashMap<int64_t, bool> stamped;
 		HashMap<int64_t, Ref<WorldStreamJob>> jobs;
 		HashMap<int64_t, bool> active;
 		HashMap<int64_t, bool> cache;
