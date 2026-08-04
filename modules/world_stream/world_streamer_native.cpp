@@ -89,6 +89,10 @@ void WorldStreamerNative::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("reconcile_plan", "cam", "ctx", "ctz",
 								 "tile_radius", "max_applies"),
 			&WorldStreamerNative::reconcile_plan);
+	ClassDB::bind_method(D_METHOD("desired_count", "layer"),
+			&WorldStreamerNative::desired_count);
+	ClassDB::bind_method(D_METHOD("active_keys_within", "layer", "cam", "radius"),
+			&WorldStreamerNative::active_keys_within);
 	ClassDB::bind_method(D_METHOD("total_jobs"), &WorldStreamerNative::total_jobs);
 	ClassDB::bind_method(D_METHOD("job_count", "layer"),
 			&WorldStreamerNative::job_count);
@@ -133,6 +137,7 @@ void WorldStreamerNative::clear_layer(int p_layer) {
 	m.bounds.clear();
 	m.child_err.clear();
 	m.desired.clear();
+	m.stamped.clear();
 	m.active.clear();
 	m.cache.clear();
 	m.cache_order.clear();
@@ -288,8 +293,53 @@ PackedInt64Array WorldStreamerNative::collect_apply(int p_layer, const PackedInt
 		const Vector3 &p_cam, const Vector3 &p_cam_true, double p_px_scale,
 		double p_err_threshold, double p_split_factor, double p_radius,
 		int p_band_lo, int p_band_hi) {
-	return collect_impl(p_layer, p_tiles, p_cam, p_cam_true, p_px_scale,
+	(void)collect_impl(p_layer, p_tiles, p_cam, p_cam_true, p_px_scale,
 			p_err_threshold, p_split_factor, p_radius, p_band_lo, p_band_hi, true);
+	PackedInt64Array fresh;
+	if (p_layer < 0 || p_layer >= (int)layers.size()) {
+		return fresh;
+	}
+	LayerMaps &m = layers[(uint32_t)p_layer];
+	for (const KeyValue<int64_t, DesiredInfo> &kv : m.desired) {
+		if (!m.stamped.has(kv.key)) {
+			m.stamped.insert(kv.key, true);
+			fresh.push_back(kv.key);
+		}
+	}
+	return fresh;
+}
+
+int WorldStreamerNative::desired_count(int p_layer) const {
+	if (p_layer < 0 || p_layer >= (int)layers.size()) {
+		return 0;
+	}
+	return (int)layers[(uint32_t)p_layer].desired.size();
+}
+
+PackedInt64Array WorldStreamerNative::active_keys_within(int p_layer,
+		const Vector3 &p_cam, double p_radius) const {
+	PackedInt64Array out;
+	if (p_layer < 0 || p_layer >= (int)layers.size()) {
+		return out;
+	}
+	const LayerMaps &m = layers[(uint32_t)p_layer];
+	LocalVector<Pair<double, int64_t>> hits;
+	for (const KeyValue<int64_t, bool> &kv : m.active) {
+		int tx, tz, depth, ix, iz;
+		decode_key(kv.key, tx, tz, depth, ix, iz);
+		double d = rect_dist(tx, tz, depth, ix, iz, p_cam);
+		if (d <= p_radius) {
+			hits.push_back(Pair<double, int64_t>(d, kv.key));
+		}
+	}
+	std::sort(hits.ptr(), hits.ptr() + hits.size(),
+			[](const Pair<double, int64_t> &a, const Pair<double, int64_t> &b) {
+				return a.first != b.first ? a.first < b.first : a.second < b.second;
+			});
+	for (uint32_t i = 0; i < hits.size(); i++) {
+		out.push_back(hits[i].second);
+	}
+	return out;
 }
 
 // WorldStreamer._pump_jobs. The missing-set walk, the plan backpressure, the
