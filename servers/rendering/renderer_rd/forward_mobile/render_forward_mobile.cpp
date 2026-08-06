@@ -783,6 +783,12 @@ void RenderForwardMobile::_pre_opaque_render(RenderDataRD *p_render_data) {
 				p_render_data->directional_shadows.push_back(i);
 			} else if (light_storage->light_get_type(base) == RSE::LIGHT_OMNI && light_storage->light_omni_get_shadow_mode(base) == RSE::LIGHT_OMNI_SHADOW_CUBE) {
 				p_render_data->cube_shadows.push_back(i);
+			} else if (light_storage->light_get_type(base) == RSE::LIGHT_AREA) {
+				// HEMICUBE (fork): six cube passes; pass 0 re-begins the shadow batch,
+				// so batching an area light wipes the accumulated directional cascades.
+				// Cube-style lights render in the cube pre-pass. See the clustered
+				// renderer's classifier for the full 2026-08-05 write-up.
+				p_render_data->cube_shadows.push_back(i);
 			} else {
 				p_render_data->shadows.push_back(i);
 			}
