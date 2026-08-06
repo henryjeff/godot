@@ -30,6 +30,10 @@
 
 #include "render_scene_data_rd.h"
 
+// Fork: _bind_methods() needs ClassDB, which this file never included before it
+// had one.
+#include "core/object/class_db.h"
+
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
@@ -209,6 +213,9 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 			Basis sky_transform = render_scene_render->environment_get_sky_orientation(p_env);
 			sky_transform = sky_transform.inverse() * cam_transform.basis;
 			RendererRD::MaterialStorage::store_transform_3x3(sky_transform, ubo.radiance_inverse_xform);
+			// Fork: keep the Basis too, so a CompositorEffect can rotate a view ray
+			// into radiance space without re-deriving it from the environment.
+			sky_radiance_inverse_xform = sky_transform;
 		}
 
 		ubo.flags |= render_scene_render->environment_get_fog_enabled(p_env) ? SCENE_DATA_FLAGS_USE_FOG : 0;
@@ -303,4 +310,26 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 
 RID RenderSceneDataRD::get_uniform_buffer() const {
 	return uniform_buffer;
+}
+
+// --- Fork (sky radiance for CompositorEffects) -------------------------------
+
+RID RenderSceneDataRD::get_sky_radiance_texture() const {
+	return sky_radiance_texture;
+}
+
+// Packed the way shaders/oct_inc.glsl wants it: x = padding in UV space,
+// y = 1 - padding * 2. Same derivation the built-in volumetric fog uses.
+Vector2 RenderSceneDataRD::get_sky_radiance_border_size() const {
+	return Vector2(radiance_border_size, 1.0f - radiance_border_size * 2.0f);
+}
+
+Basis RenderSceneDataRD::get_sky_radiance_inverse_xform() const {
+	return sky_radiance_inverse_xform;
+}
+
+void RenderSceneDataRD::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("get_sky_radiance_texture"), &RenderSceneDataRD::get_sky_radiance_texture);
+	ClassDB::bind_method(D_METHOD("get_sky_radiance_border_size"), &RenderSceneDataRD::get_sky_radiance_border_size);
+	ClassDB::bind_method(D_METHOD("get_sky_radiance_inverse_xform"), &RenderSceneDataRD::get_sky_radiance_inverse_xform);
 }
