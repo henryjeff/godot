@@ -1587,6 +1587,15 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 				p_render_data->directional_shadows.push_back(i);
 			} else if (light_storage->light_get_type(base) == RSE::LIGHT_OMNI && light_storage->light_omni_get_shadow_mode(base) == RSE::LIGHT_OMNI_SHADOW_CUBE) {
 				p_render_data->cube_shadows.push_back(i);
+			} else if (light_storage->light_get_type(base) == RSE::LIGHT_AREA) {
+				// HEMICUBE (fork): area shadows render as six cube passes whose pass 0
+				// re-begins the shadow batch (_render_shadow_begin in the cube path).
+				// Left in the batched `shadows` list, that begin WIPES every pass
+				// accumulated before it — including the directional cascades, which is
+				// how one truck-mounted AreaLight3D erased the sun's shadows for the
+				// whole scene (2026-08-05 hunt). Cube-style lights belong in the cube
+				// pre-pass, which runs before the batch opens.
+				p_render_data->cube_shadows.push_back(i);
 			} else {
 				p_render_data->shadows.push_back(i);
 			}
