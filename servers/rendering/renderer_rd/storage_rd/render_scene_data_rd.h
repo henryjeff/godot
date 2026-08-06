@@ -88,6 +88,22 @@ public:
 	float radiance_border_size;
 	Size2 reflection_atlas_border_size;
 
+	// Fork (sky radiance for CompositorEffects): the engine's own volumetric fog
+	// samples the sky radiance map to converge fog colour toward the sky at depth,
+	// but nothing on this class was reachable from a GDScript CompositorEffect, so
+	// a custom fog pass had no way to do the same and had to guess a far-field
+	// colour by hand. These two expose exactly what the built-in path already uses.
+	//
+	// NOTE the radiance map is OCTAHEDRAL (a texture2D), not a cubemap — sample it
+	// with the vec3_to_oct_with_border() mapping from shaders/oct_inc.glsl, using
+	// get_sky_radiance_border_size() as the border. Treating it as a cubemap gives
+	// plausible-looking garbage rather than an obvious failure.
+	RID sky_radiance_texture;
+	// Sky orientation inverse, folded with the camera basis — the same Basis the
+	// scene UBO's radiance_inverse_xform is stored from. Cached during update_ubo
+	// because the environment RID it derives from is not kept on this class.
+	Basis sky_radiance_inverse_xform;
+
 	float time;
 	float time_step;
 
@@ -100,11 +116,19 @@ public:
 
 	virtual bool get_camera_teleported() const override;
 
+	// Fork (sky radiance for CompositorEffects) — see the members above.
+	RID get_sky_radiance_texture() const;
+	Vector2 get_sky_radiance_border_size() const;
+	Basis get_sky_radiance_inverse_xform() const;
+
 	RID create_uniform_buffer();
 	void update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw p_debug_mode, RID p_env, RID p_reflection_probe_instance, RID p_camera_attributes, bool p_pancake_shadows, const Size2i &p_screen_size, const Size2 &p_viewport_size, const Color &p_default_bg_color, float p_luminance_multiplier, bool p_opaque_render_buffers, bool p_apply_alpha_multiplier);
 	virtual RID get_uniform_buffer() const override;
 
 	static uint32_t get_uniform_buffer_size_bytes() { return sizeof(UBODATA); }
+
+protected:
+	static void _bind_methods();
 
 private:
 	RID uniform_buffer; // loaded into this uniform buffer (supplied externally)

@@ -1433,6 +1433,10 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 				scene_data.radiance_pixel_size = 1.0f / radiance_size;
 				float uv_border_size = sky.sky_get_uv_border_size(sky_rid);
 				scene_data.radiance_border_size = uv_border_size;
+				// Fork (sky radiance for CompositorEffects): the map itself, so a
+				// custom fog pass can converge to the real sky instead of a hand-
+				// authored far-field colour. Free here — the sky is already resolved.
+				scene_data.sky_radiance_texture = sky.sky_get_radiance_texture_rd(sky_rid);
 			}
 		}
 
