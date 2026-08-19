@@ -1164,6 +1164,7 @@ void RendererSceneCull::instance_teleport(RID p_instance) {
 	Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
 	instance->teleported = true;
+	instance_teleport_count.increment();
 }
 
 void RendererSceneCull::instance_set_custom_aabb(RID p_instance, AABB p_aabb) {

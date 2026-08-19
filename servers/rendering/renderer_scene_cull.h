@@ -1069,6 +1069,9 @@ public:
 	virtual void instance_geometry_set_transparency(RID p_instance, float p_transparency);
 
 	virtual void instance_teleport(RID p_instance);
+	// Fork: see RenderingMethod::get_instance_teleport_count.
+	SafeNumeric<uint64_t> instance_teleport_count;
+	virtual uint64_t get_instance_teleport_count() const override { return instance_teleport_count.get(); }
 
 	virtual void instance_set_custom_aabb(RID p_instance, AABB p_aabb);
 
