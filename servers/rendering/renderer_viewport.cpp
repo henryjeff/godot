@@ -1401,6 +1401,18 @@ void RendererViewport::viewport_notify_camera_teleported(RID p_viewport) {
 	viewport->camera_teleported = true;
 }
 
+// Fork (camera-history shift): a floating-origin rebase moves the world AND the camera
+// by the same delta, so the rendered view is unchanged and temporal history stays valid.
+// Re-express the stored prev-frame camera in the new frame instead of discarding
+// accumulation: camera-term motion vectors then cancel the shift exactly (the scene side
+// resets per-instance prev transforms via its interpolation resets). Executes on the
+// render thread via the command queue, so it is ordered against the next draw.
+void RendererViewport::viewport_notify_camera_shifted(RID p_viewport, const Vector3 &p_delta) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	viewport->prev_camera_data.main_transform.origin += p_delta;
+}
+
 bool RendererViewport::viewport_take_camera_teleported(RID p_viewport) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL_V(viewport, false);

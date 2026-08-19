@@ -95,6 +95,9 @@ public:
 	virtual void instance_geometry_set_transparency(RID p_instance, float p_transparency) = 0;
 
 	virtual void instance_teleport(RID p_instance) = 0;
+	// Fork: monotonic count of instance_teleport calls (motion-vector resets).
+	// A frame where this jumps by hundreds is a full-screen MV discontinuity.
+	virtual uint64_t get_instance_teleport_count() const { return 0; }
 
 	virtual void instance_set_custom_aabb(RID p_instance, AABB p_aabb) = 0;
 

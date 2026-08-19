@@ -791,6 +791,7 @@ public:
 	FUNC2(viewport_set_screen_space_aa, RID, RSE::ViewportScreenSpaceAA)
 	FUNC2(viewport_set_use_taa, RID, bool)
 	FUNC1(viewport_notify_camera_teleported, RID)
+	FUNC2(viewport_notify_camera_shifted, RID, const Vector3 &)
 	FUNC2(viewport_set_use_debanding, RID, bool)
 	FUNC2(viewport_set_force_motion_vectors, RID, bool)
 	FUNC2(viewport_set_use_occlusion_culling, RID, bool)
@@ -948,6 +949,11 @@ public:
 	FUNC2(instance_set_visible, RID, bool)
 
 	FUNC1(instance_teleport, RID)
+
+	// Fork: atomic read, safe cross-thread - no command-queue marshalling.
+	virtual uint64_t get_instance_teleport_count() const override {
+		return RSG::scene->get_instance_teleport_count();
+	}
 
 	FUNC2(instance_set_custom_aabb, RID, AABB)
 

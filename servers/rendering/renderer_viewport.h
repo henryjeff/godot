@@ -254,6 +254,7 @@ public:
 
 	void viewport_notify_camera_teleported(RID p_viewport);
 	bool viewport_take_camera_teleported(RID p_viewport); // Read-and-clear; render-time use only.
+	void viewport_notify_camera_shifted(RID p_viewport, const Vector3 &p_delta); // Fork: rebase = translate prev camera, keep history.
 
 	void viewport_set_disable_2d(RID p_viewport, bool p_disable);
 	void viewport_set_environment_mode(RID p_viewport, RSE::ViewportEnvironmentMode p_mode);

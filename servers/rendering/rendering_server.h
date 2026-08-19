@@ -597,6 +597,9 @@ public:
 	virtual void viewport_set_use_taa(RID p_viewport, bool p_use_taa) = 0;
 
 	virtual void viewport_notify_camera_teleported(RID p_viewport) = 0;
+	virtual void viewport_notify_camera_shifted(RID p_viewport, const Vector3 &p_delta) = 0;
+	// Fork: monotonic instance_teleport (MV reset) counter - see RenderingMethod.
+	virtual uint64_t get_instance_teleport_count() const = 0;
 
 	virtual void viewport_set_use_debanding(RID p_viewport, bool p_use_debanding) = 0;
 
