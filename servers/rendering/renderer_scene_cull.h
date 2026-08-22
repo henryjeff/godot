@@ -1077,6 +1077,19 @@ public:
 	SafeNumeric<uint64_t> instance_teleport_count;
 	virtual uint64_t get_instance_teleport_count() const override { return instance_teleport_count.get(); }
 
+	// Fork: MV forensics ring - every impossible per-frame instance displacement
+	// (and camera-history event) recorded with its owner ObjectID, so garbage
+	// in the velocity buffer names its writer. Stride 5 int64s per entry:
+	// seq, frame, object_id, delta_um, flags (0 undeclared, 1 teleported,
+	// 2 camera-shift, 3 camera-teleport).
+	mutable Mutex mv_anomaly_mutex;
+	LocalVector<int64_t> mv_anomaly_ring;
+	uint32_t mv_anomaly_head = 0;
+	int64_t mv_anomaly_seq = 0;
+	void _mv_anomaly_record(int64_t p_object_id, double p_delta_m, int64_t p_flags);
+	virtual void mv_camera_event(int64_t p_type, double p_delta_m) override { _mv_anomaly_record(0, p_delta_m, p_type); }
+	virtual Vector<int64_t> get_mv_anomalies() const override;
+
 	virtual void instance_set_custom_aabb(RID p_instance, AABB p_aabb);
 
 	virtual void instance_attach_skeleton(RID p_instance, RID p_skeleton);

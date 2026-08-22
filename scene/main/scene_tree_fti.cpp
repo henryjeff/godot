@@ -37,6 +37,7 @@
 #include "core/math/transform_interpolator.h"
 #include "core/os/os.h"
 #include "scene/3d/visual_instance_3d.h"
+#include "servers/rendering/rendering_server.h"
 
 #ifdef GODOT_SCENE_TREE_FTI_VERIFY
 #include "scene/main/scene_tree_fti_tests.h"
@@ -614,6 +615,23 @@ void SceneTreeFTI::frame_update(Node *p_root, bool p_frame_start) {
 
 	float interpolation_fraction = Engine::get_singleton()->get_physics_interpolation_fraction();
 	uint32_t frame = Engine::get_singleton()->get_frames_drawn();
+
+	// Fork MV forensics: the PRESENTATION CLOCK. Sample time = physics tick +
+	// fraction; between consecutive frame_starts it should advance smoothly.
+	// A step > 1.5 ticks or < 0.25 delivers a whole tick of world motion in
+	// one rendered frame - full-screen uniform velocity spike, TAA rejection
+	// (the passenger flash). Record it with flags=4, delta = step in ticks.
+	if (p_frame_start) {
+		static double last_sample_time = -1.0;
+		double sample_time = (double)Engine::get_singleton()->get_physics_frames() + (double)interpolation_fraction;
+		if (last_sample_time >= 0.0) {
+			double step = sample_time - last_sample_time;
+			if (step > 1.5 || step < 0.25) {
+				RenderingServer::get_singleton()->mv_note_presentation_step(step);
+			}
+		}
+		last_sample_time = sample_time;
+	}
 
 	uint64_t before = 0;
 #ifdef DEBUG_ENABLED

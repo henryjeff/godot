@@ -1073,8 +1073,43 @@ void RendererSceneCull::instance_set_transform(RID p_instance, const Transform3D
 	}
 
 #endif
+	// Fork MV forensics: an instance moving metres in one update without a
+	// declared teleport writes that whole span into the velocity buffer for a
+	// frame. Record the writer. (2 m per update at 60 Hz = 432 km/h - nothing
+	// legitimate moves that fast here.)
+	{
+		const double delta_m = (p_transform.origin - instance->transform.origin).length();
+		if (delta_m > 2.0) {
+			_mv_anomaly_record((int64_t)(uint64_t)instance->object_id, delta_m, instance->teleported ? 1 : 0);
+		}
+	}
 	instance->transform = p_transform;
 	_instance_queue_update(instance, true);
+}
+
+void RendererSceneCull::_mv_anomaly_record(int64_t p_object_id, double p_delta_m, int64_t p_flags) {
+	MutexLock lock(mv_anomaly_mutex);
+	const uint32_t CAP = 256 * 5;
+	if (mv_anomaly_ring.size() < CAP) {
+		mv_anomaly_ring.resize(CAP);
+	}
+	mv_anomaly_ring[mv_anomaly_head + 0] = ++mv_anomaly_seq;
+	mv_anomaly_ring[mv_anomaly_head + 1] = (int64_t)Engine::get_singleton()->get_frames_drawn();
+	mv_anomaly_ring[mv_anomaly_head + 2] = p_object_id;
+	mv_anomaly_ring[mv_anomaly_head + 3] = (int64_t)(p_delta_m * 1000000.0);
+	mv_anomaly_ring[mv_anomaly_head + 4] = p_flags;
+	mv_anomaly_head = (mv_anomaly_head + 5) % CAP;
+}
+
+Vector<int64_t> RendererSceneCull::get_mv_anomalies() const {
+	MutexLock lock(mv_anomaly_mutex);
+	Vector<int64_t> out;
+	out.resize(mv_anomaly_ring.size());
+	int64_t *w = out.ptrw();
+	for (uint32_t i = 0; i < mv_anomaly_ring.size(); i++) {
+		w[i] = mv_anomaly_ring[i];
+	}
+	return out;
 }
 
 void RendererSceneCull::instance_attach_object_instance_id(RID p_instance, ObjectID p_id) {
@@ -1166,6 +1201,19 @@ void RendererSceneCull::instance_teleport(RID p_instance) {
 	ERR_FAIL_NULL(instance);
 	instance->teleported = true;
 	instance_teleport_count.increment();
+	// Fork MV forensics: a declaration arriving in the SAME drawn frame as a
+	// big move makes that move harmless (prev resets before render) - back-mark
+	// its ring entry so only genuinely undeclared writes surface as anomalies.
+	{
+		MutexLock lock(mv_anomaly_mutex);
+		const int64_t oid = (int64_t)(uint64_t)instance->object_id;
+		const int64_t now_frame = (int64_t)Engine::get_singleton()->get_frames_drawn();
+		for (uint32_t i = 0; i + 4 < mv_anomaly_ring.size(); i += 5) {
+			if (mv_anomaly_ring[i + 2] == oid && mv_anomaly_ring[i + 1] == now_frame && mv_anomaly_ring[i + 4] == 0) {
+				mv_anomaly_ring[i + 4] = 8; // declared same frame
+			}
+		}
+	}
 }
 
 void RendererSceneCull::instance_set_custom_aabb(RID p_instance, AABB p_aabb) {

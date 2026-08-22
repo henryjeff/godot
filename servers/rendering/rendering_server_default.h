@@ -955,6 +955,15 @@ public:
 		return RSG::scene->get_instance_teleport_count();
 	}
 
+	// Fork: mutex-guarded ring copy - safe cross-thread.
+	virtual Vector<int64_t> get_mv_anomalies() const override {
+		return RSG::scene->get_mv_anomalies();
+	}
+
+	virtual void mv_note_presentation_step(double p_step_ticks) override {
+		RSG::scene->mv_camera_event(4, p_step_ticks);
+	}
+
 	FUNC2(instance_set_custom_aabb, RID, AABB)
 
 	FUNC2(instance_attach_skeleton, RID, RID)

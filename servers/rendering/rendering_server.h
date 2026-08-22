@@ -600,6 +600,10 @@ public:
 	virtual void viewport_notify_camera_shifted(RID p_viewport, const Vector3 &p_delta) = 0;
 	// Fork: monotonic instance_teleport (MV reset) counter - see RenderingMethod.
 	virtual uint64_t get_instance_teleport_count() const = 0;
+	// Fork: MV forensics ring (stride 5: seq, frame, object_id, delta_um, flags).
+	virtual Vector<int64_t> get_mv_anomalies() const = 0;
+	// Fork: presentation-clock anomaly from SceneTreeFTI (flags=4, delta=ticks).
+	virtual void mv_note_presentation_step(double p_step_ticks) = 0;
 
 	virtual void viewport_set_use_debanding(RID p_viewport, bool p_use_debanding) = 0;
 
