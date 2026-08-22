@@ -1399,6 +1399,7 @@ void RendererViewport::viewport_notify_camera_teleported(RID p_viewport) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);
 	viewport->camera_teleported = true;
+	RSG::scene->mv_camera_event(3, 0.0); // fork MV forensics
 }
 
 // Fork (camera-history shift): a floating-origin rebase moves the world AND the camera
@@ -1411,6 +1412,7 @@ void RendererViewport::viewport_notify_camera_shifted(RID p_viewport, const Vect
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);
 	viewport->prev_camera_data.main_transform.origin += p_delta;
+	RSG::scene->mv_camera_event(2, p_delta.length()); // fork MV forensics
 }
 
 bool RendererViewport::viewport_take_camera_teleported(RID p_viewport) {

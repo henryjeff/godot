@@ -98,6 +98,10 @@ public:
 	// Fork: monotonic count of instance_teleport calls (motion-vector resets).
 	// A frame where this jumps by hundreds is a full-screen MV discontinuity.
 	virtual uint64_t get_instance_teleport_count() const { return 0; }
+	// Fork: MV forensics - see RendererSceneCull. Camera-history events feed
+	// the same ring (type 2 shift, 3 teleport).
+	virtual void mv_camera_event(int64_t p_type, double p_delta_m) {}
+	virtual Vector<int64_t> get_mv_anomalies() const { return Vector<int64_t>(); }
 
 	virtual void instance_set_custom_aabb(RID p_instance, AABB p_aabb) = 0;
 

@@ -1192,9 +1192,26 @@ uniform vec3 uv2_offset;
 		code += "uniform float fov_override : hint_range(1.0, 179.0, 0.1);\n";
 	}
 
+	// SPRAY PAINT (fork). Every BaseMaterial3D samples ONE global paint atlas
+	// in OBJECT-LOCAL triplanar space, so any mesh is paintable with no
+	// per-asset setup, and paint rides a moving body for free. paint_tile.z == 0
+	// means this instance owns no page: the branch costs one compare and
+	// nothing is sampled. Tile rects arrive HALF-TEXEL INSET - bilinear would
+	// otherwise bleed the neighbouring tile in at the seams.
+	code += R"(
+global uniform sampler2D paint_atlas;
+instance uniform vec4 paint_tile;
+instance uniform vec4 paint_box_min;
+instance uniform vec4 paint_box_size;
+varying vec3 paint_local_pos;
+varying vec3 paint_local_nrm;
+)";
+
 	// Generate vertex shader.
 	code += R"(
-void vertex() {)";
+void vertex() {
+	paint_local_pos = VERTEX;
+	paint_local_nrm = NORMAL;)";
 
 	if (flags[FLAG_SRGB_VERTEX_COLOR]) {
 		code += R"(
@@ -2052,6 +2069,33 @@ void fragment() {)";
 	ALBEDO.rgb = mix(ALBEDO.rgb, detail, detail_mask_tex.r);
 )";
 	}
+
+	code += R"(
+	// Spray paint: three axis planes packed across the tile as a 1x3 strip,
+	// blended by the object-space normal. Last write in fragment() so it wins
+	// over every feature block above it, detail blend included.
+	if (paint_tile.z > 0.0) {
+		vec3 pb = clamp((paint_local_pos - paint_box_min.xyz)
+				/ max(paint_box_size.xyz, vec3(0.0001)), vec3(0.0), vec3(1.0));
+		vec3 pw = abs(normalize(paint_local_nrm));
+		pw /= max(pw.x + pw.y + pw.z, 0.0001);
+		// SIX planes, not three: a tile is 3 columns (X, Y, Z) by 2 rows
+		// (+axis, -axis). Sign-blind triplanar paints BOTH faces an axis
+		// projects onto, so spraying one side of a panel bleeds through to the
+		// other. Picking the row off the normal's sign separates them.
+		vec2 ts = vec2(1.0 / 3.0, 0.5);
+		vec3 nrm = normalize(paint_local_nrm);
+		float rx = nrm.x >= 0.0 ? 0.0 : 0.5;
+		float ry = nrm.y >= 0.0 ? 0.0 : 0.5;
+		float rz = nrm.z >= 0.0 ? 0.0 : 0.5;
+		vec4 sx = texture(paint_atlas, paint_tile.xy + (vec2(0.0, rx) + pb.zy * ts) * paint_tile.zw);
+		vec4 sy = texture(paint_atlas, paint_tile.xy + (vec2(1.0 / 3.0, ry) + pb.xz * ts) * paint_tile.zw);
+		vec4 sz = texture(paint_atlas, paint_tile.xy + (vec2(2.0 / 3.0, rz) + pb.xy * ts) * paint_tile.zw);
+		vec4 spray = sx * pw.x + sy * pw.y + sz * pw.z;
+		ALBEDO = mix(ALBEDO, spray.rgb, spray.a);
+		ROUGHNESS = mix(ROUGHNESS, 0.38, spray.a);
+	}
+)";
 
 	code += "}\n";
 
