@@ -90,6 +90,12 @@ void Thread::wait_to_finish() {
 
 void Thread::make_main_thread() {
 	if (caller_id == MAIN_ID) {
+		// FORK PATCH (upstream 4.8-dev4 bug): the bootstrap thread already holds MAIN_ID,
+		// so it takes this path and never claimed is_main_thread_assigned -- which
+		// release_main_thread() then asserts is set, crashing on exit. Claim it here so the
+		// pair stays symmetric. A genuine second claimant still fails the CRASH_COND below,
+		// since its caller_id is not MAIN_ID.
+		is_main_thread_assigned.set_if_clear();
 		return; // We're already the main thread
 	}
 	CRASH_COND_MSG(!is_main_thread_assigned.set_if_clear(), "A second thread attempted to become the main thread.");
