@@ -1531,6 +1531,21 @@ GDScript::~GDScript() {
 		}
 	}
 
+	{
+		// FORK PATCH (upstream bug). Those orphaned lambdas outlive us, and each one's
+		// UpdatableFuncPtr keeps a RAW back-pointer to this script. Its destructor locks
+		// script->func_ptrs_to_update_mutex, so leaving the pointer dangling is a
+		// use-after-free: GDScriptLanguage::finish() frees scripts via GDScriptCache::clear()
+		// and only THEN detaches the instances still holding those lambdas.
+		// ~UpdatableFuncPtr already bails on a null script; nothing ever set it. Set it.
+		MutexLock lock(func_ptrs_to_update_mutex);
+		for (UpdatableFuncPtr *updatable : func_ptrs_to_update) {
+			updatable->script = nullptr;
+			updatable->list_element = nullptr;
+		}
+		func_ptrs_to_update.clear();
+	}
+
 	clear();
 }
 
