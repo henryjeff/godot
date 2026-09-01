@@ -5242,6 +5242,16 @@ void Main::cleanup(bool p_force) {
 	}
 #endif // XR_DISABLED
 
+	// FORK PATCH (upstream bug): stop audio BEFORE unloading GDExtensions. The driver
+	// thread keeps calling AudioEffectInstance::process_silence() on instances whose
+	// extension-registered class binding deinitialize_extensions() is busy freeing, which
+	// ASan catches as a heap-use-after-free across the audio and main threads (Windows
+	// reports it as STATUS_HEAP_CORRUPTION at exit). finish() stops the drivers and frees
+	// the buses owning those instances; the block near the end still does the memdelete.
+	if (audio_server) {
+		audio_server->finish();
+	}
+
 #ifdef TOOLS_ENABLED
 	GDExtensionManager::get_singleton()->deinitialize_extensions(GDExtension::INITIALIZATION_LEVEL_EDITOR);
 	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_EDITOR);
@@ -5288,7 +5298,7 @@ void Main::cleanup(bool p_force) {
 #endif // XR_DISABLED
 
 	if (audio_server) {
-		audio_server->finish();
+		// finish() already ran before GDExtension teardown above.
 		memdelete(audio_server);
 	}
 
