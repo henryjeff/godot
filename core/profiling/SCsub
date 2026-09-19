@@ -67,6 +67,10 @@ if env["profiler"]:
         # disconnect/reconnect (so the in-game capture button works after the GUI detaches)
         # and only records while connected.
         env_tracy.Append(CPPDEFINES=["TRACY_ENABLE", "TRACY_ON_DEMAND"])
+        # Tracy's crash filter aborts (exit 3) and only reports to a connected profiler, which
+        # swallows the crash for self-captures; leave the fault to Godot's crash handler, which
+        # prints a symbolized backtrace from the build's PDB.
+        env_tracy.Append(CPPDEFINES=["TRACY_NO_CRASH_HANDLER"])
         if env["profiler_sample_callstack"]:
             if env["platform"] not in ("windows", "linuxbsd", "android"):
                 # Reference the feature matrix in the tracy documentation.

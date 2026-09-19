@@ -31,6 +31,26 @@
 #include "texture_rd.h"
 
 #include "core/object/callable_mp.h"
+#include "core/os/thread.h"
+
+static void _texture_rd_notify(ObjectID p_id) {
+	Resource *res = Object::cast_to<Resource>(ObjectDB::get_instance(p_id));
+	if (res != nullptr) {
+		res->notify_property_list_changed();
+		res->emit_changed();
+	}
+}
+
+static void _changed_on_main_impl(Resource *p_res) {
+	if (Thread::is_main_thread()) {
+		p_res->notify_property_list_changed();
+		p_res->emit_changed();
+	} else {
+		callable_mp_static(&_texture_rd_notify).call_deferred(p_res->get_instance_id());
+	}
+}
+
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server.h"
@@ -110,8 +130,9 @@ void Texture2DRD::_set_texture_rd_rid(RID p_texture_rd_rid) {
 		texture_rid = RS::get_singleton()->texture_rd_create(p_texture_rd_rid);
 	}
 
-	notify_property_list_changed();
-	emit_changed();
+	// Runs on the render thread under the separate thread model; listeners (TextureRect)
+	// touch main-thread-only state, so the notifications hop to the main thread.
+	_changed_on_main_impl(this);
 }
 
 RID Texture2DRD::get_texture_rd_rid() const {
@@ -237,8 +258,9 @@ void TextureLayeredRD::_set_texture_rd_rid(RID p_texture_rd_rid) {
 
 	image_format = RS::get_singleton()->texture_get_format(texture_rid);
 
-	notify_property_list_changed();
-	emit_changed();
+	// Runs on the render thread under the separate thread model; listeners (TextureRect)
+	// touch main-thread-only state, so the notifications hop to the main thread.
+	_changed_on_main_impl(this);
 }
 
 RID TextureLayeredRD::get_texture_rd_rid() const {
@@ -340,8 +362,9 @@ void Texture3DRD::_set_texture_rd_rid(RID p_texture_rd_rid) {
 
 	image_format = RS::get_singleton()->texture_get_format(texture_rid);
 
-	notify_property_list_changed();
-	emit_changed();
+	// Runs on the render thread under the separate thread model; listeners (TextureRect)
+	// touch main-thread-only state, so the notifications hop to the main thread.
+	_changed_on_main_impl(this);
 }
 
 RID Texture3DRD::get_texture_rd_rid() const {

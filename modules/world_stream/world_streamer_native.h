@@ -11,20 +11,20 @@
 #include "core/templates/local_vector.h"
 #include "scene/3d/node_3d.h"
 
-// THE FULL SEND (FORK_PORT_PLAN.md in the game repo): WorldStreamer becomes
-// this engine node.
-//   M1 — key/dist/cut, lifted verbatim from the extension's StreamCutCore
-//        (addons/wasteland_terrain/src/stream_cut.cpp), itself the pinned
-//        mirror of WorldStreamer._collect.
-//   M2 — the ledgers (desired/jobs/active/cache-LRU) plus pump and drain:
-//        worker submission happens here, and the drain ingests height bounds
-//        and child error straight from the layer — the GDScript machine's
-//        mirror pushes are gone; these maps ARE the state the cut reads.
-//
-// The GDScript machine remains the AUTHORITY until M5 and keeps the payload
-// dict itself (drain returns event-rate deltas for it); layers stay GDScript
-// Objects duck-called at leaf events only. tests/test_stream_cut_native.gd
-// and tests/test_stream_machine_native.gd in the game repo pin parity.
+// THE FULL SEND (the game repo's world-stream port, M1-M5 ALL SHIPPED):
+// WorldStreamer became this engine node.
+//   M1 key/dist/cut (lifted from the extension's StreamCutCore, now retired,
+//      itself the pinned mirror of WorldStreamer._collect)
+//   M2 ledgers (desired/jobs/active/cache-LRU) + pump + drain: worker
+//      submission happens here, the drain ingests bounds and child error
+//      straight from the layer - these maps ARE the state the cut reads
+//   M3 reconcile: atomic subtree swap, budgets, settle/refine reporting
+//   M4 fresh-key collect, want-set queries, count surface
+//   M5 the flip: the GDScript machine is DELETED - world_streamer.gd is a
+//      thin driver and this module is a HARD requirement.
+// Layers stay GDScript Objects duck-called at leaf events only;
+// tests/test_stream_cut_native.gd and tests/test_stream_machine_native.gd in
+// the game repo pin the invariants.
 //
 // STATE MIRRORING CONTRACT for the cut inputs (same as the extension):
 // per-key height bounds and child error are learned at exactly ONE point (the

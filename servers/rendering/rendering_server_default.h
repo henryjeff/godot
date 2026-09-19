@@ -224,7 +224,19 @@ public:
 	}
 
 	//these go through command queue if they are in another thread
-	FUNC3(texture_2d_update, RID, const Ref<Image> &, int)
+	// Queued by value: the caller (font glyph atlases above all) keeps writing
+	// the same Image via ptrw() after this returns, and CowData is not safe
+	// against the render thread reading it concurrently (torn/empty upload,
+	// memcpy crash in _copy_on_write).
+	virtual void texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer) override {
+		WRITE_ACTION
+		if (ASYNC_COND_PUSH) {
+			command_queue.push(server_name, &ServerName::texture_2d_update, p_texture, p_image.is_valid() ? p_image->duplicate() : p_image, p_layer);
+		} else {
+			command_queue.flush_if_pending();
+			server_name->texture_2d_update(p_texture, p_image, p_layer);
+		}
+	}
 	FUNC2(texture_3d_update, RID, const Vector<Ref<Image>> &)
 	FUNC4(texture_external_update, RID, int, int, uint64_t)
 	FUNC2(texture_proxy_update, RID, RID)

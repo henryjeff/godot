@@ -8949,6 +8949,26 @@ void RenderingDevice::finalize() {
 	// Delete everything the graph has created.
 	draw_graph.finalize();
 
+#ifdef DEBUG_ENABLED
+	// DIAGNOSTIC (exit leaks): describe what is still alive, so a leak points at its owner.
+	{
+		LocalVector<RID> fbs = framebuffer_owner.get_owned_list();
+		for (const RID &rid : fbs) {
+			Framebuffer *fb = framebuffer_owner.get_or_null(rid);
+			String atts;
+			for (const RID &t : fb->texture_ids) {
+				Texture *tex = texture_owner.get_or_null(t);
+				atts += tex ? vformat(" [%dx%d fmt=%d usage=%x shared=%d]", tex->width, tex->height, int(tex->format), tex->usage_flags, int(tex->owner.is_valid())) : String(" [freed]");
+			}
+			WARN_PRINT(vformat("leaked Framebuffer %dx%d%s", fb->size.x, fb->size.y, atts));
+		}
+		LocalVector<RID> texs = texture_owner.get_owned_list();
+		for (const RID &rid : texs) {
+			Texture *tex = texture_owner.get_or_null(rid);
+			WARN_PRINT(vformat("leaked Texture %dx%d fmt=%d usage=%x shared=%d", tex->width, tex->height, int(tex->format), tex->usage_flags, int(tex->owner.is_valid())));
+		}
+	}
+#endif
 	// Free all resources.
 	_free_rids(render_pipeline_owner, "Pipeline");
 	_free_rids(compute_pipeline_owner, "Compute");

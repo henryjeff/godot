@@ -297,6 +297,11 @@ void RenderingServerDefault::finish() {
 			server_task_id = WorkerThreadPool::INVALID_TASK_ID;
 		}
 		server_thread = Thread::MAIN_ID;
+		// The render thread is gone: this hands the device back to the main thread, which
+		// finalizes it in the display server teardown (render-thread guarded).
+		if (RenderingDevice::get_singleton() != nullptr) {
+			RenderingDevice::get_singleton()->make_current();
+		}
 	} else {
 		_finish();
 	}

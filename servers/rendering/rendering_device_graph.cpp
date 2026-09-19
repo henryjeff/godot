@@ -30,6 +30,8 @@
 
 #include "rendering_device_graph.h"
 
+#include "core/profiling/profiling.h"
+
 #define PRINT_RENDER_GRAPH 0
 #define FORCE_FULL_ACCESS_BITS 0
 #define PRINT_RESOURCE_TRACKER_TOTAL 0
@@ -1129,6 +1131,7 @@ void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedC
 				driver->command_copy_buffer(r_command_buffer, buffer_get_data_command->source, buffer_get_data_command->destination, buffer_get_data_command->region);
 			} break;
 			case RecordedCommand::TYPE_BUFFER_UPDATE: {
+				GodotProfileZone("graph.cmd.buffer_update");
 				const RecordedBufferUpdateCommand *buffer_update_command = reinterpret_cast<const RecordedBufferUpdateCommand *>(command);
 				const RecordedBufferCopy *command_buffer_copies = buffer_update_command->buffer_copies();
 				for (uint32_t j = 0; j < buffer_update_command->buffer_copies_count; j++) {
@@ -1136,6 +1139,7 @@ void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedC
 				}
 			} break;
 			case RecordedCommand::TYPE_DRIVER_CALLBACK: {
+				GodotProfileZone("graph.cmd.driver_callback");
 				const RecordedDriverCallbackCommand *driver_callback_command = reinterpret_cast<const RecordedDriverCallbackCommand *>(command);
 				driver_callback_command->callback(driver, r_command_buffer, driver_callback_command->userdata);
 			} break;
@@ -1144,6 +1148,7 @@ void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedC
 				_run_raytracing_list_command(r_command_buffer, raytracing_list_command->instruction_data(), raytracing_list_command->instruction_data_size);
 			} break;
 			case RecordedCommand::TYPE_COMPUTE_LIST: {
+				GodotProfileZone("graph.cmd.compute_list");
 				if (driver_workarounds.avoid_compute_after_draw && workarounds_state.draw_list_found) {
 					// Avoid compute after draw workaround. Refer to the comment that enables this in the Vulkan driver for more information.
 					workarounds_state.draw_list_found = false;
@@ -1168,6 +1173,7 @@ void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedC
 				_run_compute_list_command(r_command_buffer, compute_list_command->instruction_data(), compute_list_command->instruction_data_size);
 			} break;
 			case RecordedCommand::TYPE_DRAW_LIST: {
+				GodotProfileZone("graph.cmd.draw_list");
 				if (driver_workarounds.avoid_compute_after_draw) {
 					// Indicate that a draw list was encountered for the workaround.
 					workarounds_state.draw_list_found = true;
@@ -1212,28 +1218,34 @@ void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedC
 				}
 			} break;
 			case RecordedCommand::TYPE_TEXTURE_CLEAR_COLOR: {
+				GodotProfileZone("graph.cmd.texture_op");
 				const RecordedTextureClearColorCommand *texture_clear_color_command = reinterpret_cast<const RecordedTextureClearColorCommand *>(command);
 				driver->command_clear_color_texture(r_command_buffer, texture_clear_color_command->texture, RDD::TEXTURE_LAYOUT_COPY_DST_OPTIMAL, texture_clear_color_command->color, texture_clear_color_command->range);
 			} break;
 			case RecordedCommand::TYPE_TEXTURE_CLEAR_DEPTH_STENCIL: {
+				GodotProfileZone("graph.cmd.texture_op");
 				const RecordedTextureClearDepthStencilCommand *texture_clear_depth_stencil_command = reinterpret_cast<const RecordedTextureClearDepthStencilCommand *>(command);
 				driver->command_clear_depth_stencil_texture(r_command_buffer, texture_clear_depth_stencil_command->texture, RDD::TEXTURE_LAYOUT_COPY_DST_OPTIMAL, texture_clear_depth_stencil_command->depth, texture_clear_depth_stencil_command->stencil, texture_clear_depth_stencil_command->range);
 			} break;
 			case RecordedCommand::TYPE_TEXTURE_COPY: {
+				GodotProfileZone("graph.cmd.texture_op");
 				const RecordedTextureCopyCommand *texture_copy_command = reinterpret_cast<const RecordedTextureCopyCommand *>(command);
 				const VectorView<RDD::TextureCopyRegion> command_texture_copy_regions_view(texture_copy_command->texture_copy_regions(), texture_copy_command->texture_copy_regions_count);
 				driver->command_copy_texture(r_command_buffer, texture_copy_command->from_texture, RDD::TEXTURE_LAYOUT_COPY_SRC_OPTIMAL, texture_copy_command->to_texture, RDD::TEXTURE_LAYOUT_COPY_DST_OPTIMAL, command_texture_copy_regions_view);
 			} break;
 			case RecordedCommand::TYPE_TEXTURE_GET_DATA: {
+				GodotProfileZone("graph.cmd.texture_op");
 				const RecordedTextureGetDataCommand *texture_get_data_command = reinterpret_cast<const RecordedTextureGetDataCommand *>(command);
 				const VectorView<RDD::BufferTextureCopyRegion> command_buffer_texture_copy_regions_view(texture_get_data_command->buffer_texture_copy_regions(), texture_get_data_command->buffer_texture_copy_regions_count);
 				driver->command_copy_texture_to_buffer(r_command_buffer, texture_get_data_command->from_texture, RDD::TEXTURE_LAYOUT_COPY_SRC_OPTIMAL, texture_get_data_command->to_buffer, command_buffer_texture_copy_regions_view);
 			} break;
 			case RecordedCommand::TYPE_TEXTURE_RESOLVE: {
+				GodotProfileZone("graph.cmd.texture_op");
 				const RecordedTextureResolveCommand *texture_resolve_command = reinterpret_cast<const RecordedTextureResolveCommand *>(command);
 				driver->command_resolve_texture(r_command_buffer, texture_resolve_command->from_texture, RDD::TEXTURE_LAYOUT_RESOLVE_SRC_OPTIMAL, texture_resolve_command->src_layer, texture_resolve_command->src_mipmap, texture_resolve_command->to_texture, RDD::TEXTURE_LAYOUT_RESOLVE_DST_OPTIMAL, texture_resolve_command->dst_layer, texture_resolve_command->dst_mipmap);
 			} break;
 			case RecordedCommand::TYPE_TEXTURE_UPDATE: {
+				GodotProfileZone("graph.cmd.texture_op");
 				const RecordedTextureUpdateCommand *texture_update_command = reinterpret_cast<const RecordedTextureUpdateCommand *>(command);
 				const RecordedBufferToTextureCopy *command_buffer_to_texture_copies = texture_update_command->buffer_to_texture_copies();
 				for (uint32_t j = 0; j < texture_update_command->buffer_to_texture_copies_count; j++) {
@@ -1380,6 +1392,7 @@ void RenderingDeviceGraph::_boost_priority_for_render_commands(RecordedCommandSo
 }
 
 void RenderingDeviceGraph::_group_barriers_for_render_commands(RDD::CommandBufferID p_command_buffer, const RecordedCommandSort *p_sorted_commands, uint32_t p_sorted_commands_count, bool p_full_memory_barrier) {
+	GodotProfileZone("graph.barriers");
 	if (!driver_honors_barriers) {
 		return;
 	}
@@ -2622,6 +2635,7 @@ void RenderingDeviceGraph::end(bool p_reorder_commands, bool p_full_barriers, RD
 
 	thread_local LocalVector<RecordedCommandSort> commands_sorted;
 	if (p_reorder_commands) {
+		GodotProfileZone("graph.topo_sort");
 		thread_local LocalVector<int64_t> command_stack;
 		thread_local LocalVector<int32_t> sorted_command_indices;
 		thread_local LocalVector<uint32_t> command_degrees;
@@ -2730,7 +2744,10 @@ void RenderingDeviceGraph::end(bool p_reorder_commands, bool p_full_barriers, RD
 		}
 	}
 
-	_wait_for_secondary_command_buffer_tasks();
+	{
+		GodotProfileZone("graph.wait_secondary");
+		_wait_for_secondary_command_buffer_tasks();
+	}
 
 	if (command_count > 0) {
 		int32_t current_label_index = -1;
@@ -2752,7 +2769,10 @@ void RenderingDeviceGraph::end(bool p_reorder_commands, bool p_full_barriers, RD
 			_print_render_commands(commands_sorted.ptr(), command_count);
 #endif
 
-			commands_sorted.sort();
+			{
+				GodotProfileZone("graph.level_sort");
+				commands_sorted.sort();
+			}
 
 #if PRINT_RENDER_GRAPH
 			print_line("AFTER SORT");
@@ -2763,6 +2783,13 @@ void RenderingDeviceGraph::end(bool p_reorder_commands, bool p_full_barriers, RD
 			print_line(vformat("Recording %d commands", command_count));
 #endif
 
+#if defined(GODOT_USE_TRACY)
+			ZoneNamedN(__graph_record_zone, "graph.record_levels", true);
+			{
+				const CharString __c = (String("cmds=") + itos(command_count)).utf8();
+				ZoneTextV(__graph_record_zone, __c.get_data(), __c.length());
+			}
+#endif
 			uint32_t boosted_priority = 0;
 			uint32_t current_level = commands_sorted[0].level;
 			uint32_t current_level_start = 0;

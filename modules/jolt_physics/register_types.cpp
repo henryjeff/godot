@@ -39,6 +39,9 @@
 #include "servers/physics_3d/physics_server_3d_manager.h"
 #include "servers/physics_3d/physics_server_3d_wrap_mt.h"
 
+#include "core/config/engine.h"
+#include "jolt_store_bridge.h"
+
 PhysicsServer3D *create_jolt_physics_server() {
 #ifdef THREADS_ENABLED
 	bool run_on_separate_thread = GLOBAL_GET("physics/3d/run_on_separate_thread");
@@ -59,6 +62,9 @@ void initialize_jolt_physics_module(ModuleInitializationLevel p_level) {
 	jolt_initialize();
 	PhysicsServer3DManager::get_singleton()->register_server("Jolt Physics", callable_mp_static(&create_jolt_physics_server));
 	JoltProjectSettings::register_settings();
+	// FRIDGE FORK: batched readback singleton for the row store (see jolt_store_bridge.h).
+	GDREGISTER_CLASS(JoltStoreBridge);
+	Engine::get_singleton()->add_singleton(Engine::Singleton("JoltStoreBridge", memnew(JoltStoreBridge)));
 }
 
 void uninitialize_jolt_physics_module(ModuleInitializationLevel p_level) {
@@ -66,5 +72,9 @@ void uninitialize_jolt_physics_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 
+	if (JoltStoreBridge::get_singleton() != nullptr) {
+		Engine::get_singleton()->remove_singleton("JoltStoreBridge");
+		memdelete(JoltStoreBridge::get_singleton());
+	}
 	jolt_deinitialize();
 }

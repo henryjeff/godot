@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "renderer_scene_render_rd.h"
+#include "core/profiling/profiling.h"
 
 #include "core/config/project_settings.h"
 #include "core/io/image.h"
@@ -296,6 +297,7 @@ bool RendererSceneRenderRD::_has_compositor_effect(RSE::CompositorEffectCallback
 }
 
 void RendererSceneRenderRD::_process_compositor_effects(RSE::CompositorEffectCallbackType p_callback_type, const RenderDataRD *p_render_data) {
+	GodotProfileZone("compositor effects");
 	RendererCompositorStorage *comp_storage = RendererCompositorStorage::get_singleton();
 
 	if (p_render_data->compositor.is_null()) {

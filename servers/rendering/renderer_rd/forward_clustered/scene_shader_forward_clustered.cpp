@@ -1013,6 +1013,13 @@ void fragment() {
 }
 
 void SceneShaderForwardClustered::set_default_specialization(const ShaderSpecialization &p_specialization) {
+	// fridge: an unchanged specialization must not wipe every pipeline of every
+	// shader (a same-value quality setter cost a 45-57 ms frame per call).
+	if (default_specialization.packed_0 == p_specialization.packed_0 &&
+			default_specialization.packed_1 == p_specialization.packed_1 &&
+			default_specialization.packed_2 == p_specialization.packed_2) {
+		return;
+	}
 	default_specialization = p_specialization;
 
 	for (SelfList<ShaderData> *E = shader_list.first(); E; E = E->next()) {

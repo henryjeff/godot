@@ -2410,6 +2410,9 @@ void LightStorage::shadow_atlas_set_size(RID p_atlas, int p_size, bool p_16_bits
 	g_atlas_resize++; // DIAGNOSTIC: atlas size actually changed (past early-return)
 	for (int i = 0; i < 4; i++) {
 		//clear subdivisions
+		for (int j = 0; j < shadow_atlas->quadrants[i].shadows.size(); j++) {
+			_shadow_atlas_free_cached_static(&shadow_atlas->quadrants[i].shadows.write[j]);
+		}
 		shadow_atlas->quadrants[i].shadows.clear();
 		shadow_atlas->quadrants[i].shadows.resize(int64_t(shadow_atlas->quadrants[i].subdivision * shadow_atlas->quadrants[i].subdivision));
 	}
@@ -2449,6 +2452,7 @@ void LightStorage::shadow_atlas_set_quadrant_subdivision(RID p_atlas, int p_quad
 
 	//erase all data from quadrant
 	for (int i = 0; i < shadow_atlas->quadrants[p_quadrant].shadows.size(); i++) {
+		_shadow_atlas_free_cached_static(&shadow_atlas->quadrants[p_quadrant].shadows.write[i]);
 		if (shadow_atlas->quadrants[p_quadrant].shadows[i].owner.is_valid()) {
 			shadow_atlas->shadow_owners.erase(shadow_atlas->quadrants[p_quadrant].shadows[i].owner);
 			LightInstance *li = light_instance_owner.get_or_null(shadow_atlas->quadrants[p_quadrant].shadows[i].owner);
@@ -2790,11 +2794,16 @@ void LightStorage::_shadow_atlas_invalidate_shadow(ShadowAtlas::Quadrant::Shadow
 		sli->shadow_atlases.erase(p_atlas);
 	}
 
-	// Approach-A cached spot shadows: this slot's cached static depth belonged to the old owner
+	// Approach-A cached spot shadows: this slot cached static depth belonged to the old owner
 	// (or an old slot size). Free it + force a re-render, so a reassigned/resized slot never
-	// texture_copies a stale static depth into the atlas — that's the source of phantom shadows.
+	// texture_copies a stale static depth into the atlas (the source of phantom shadows).
+	g_atlas_inval_freed_static += _shadow_atlas_free_cached_static(p_shadow); // DIAGNOSTIC: real caches destroyed
+}
+
+int LightStorage::_shadow_atlas_free_cached_static(ShadowAtlas::Quadrant::Shadow *p_shadow) {
+	int freed = 0;
 	if (p_shadow->static_fb.is_valid()) {
-		g_atlas_inval_freed_static++; // DIAGNOSTIC: destroyed a REAL cached static depth
+		freed++;
 		RD::get_singleton()->free_rid(p_shadow->static_fb);
 		p_shadow->static_fb = RID();
 	}
@@ -2802,8 +2811,7 @@ void LightStorage::_shadow_atlas_invalidate_shadow(ShadowAtlas::Quadrant::Shadow
 		RD::get_singleton()->free_rid(p_shadow->static_depth);
 		p_shadow->static_depth = RID();
 	}
-	// Same reasoning for the AREA hemicube's per-face cache: a reassigned or resized slot must
-	// never copy a previous owner's faces into the working cubemap.
+	// The per-face framebuffers sit on slices of static_cube; free them before the cube.
 	for (int i = 0; i < 6; i++) {
 		if (p_shadow->static_cube_fb[i].is_valid()) {
 			RD::get_singleton()->free_rid(p_shadow->static_cube_fb[i]);
@@ -2811,11 +2819,12 @@ void LightStorage::_shadow_atlas_invalidate_shadow(ShadowAtlas::Quadrant::Shadow
 		}
 	}
 	if (p_shadow->static_cube.is_valid()) {
-		g_atlas_inval_freed_static++; // DIAGNOSTIC: destroyed a REAL cached static depth
+		freed++;
 		RD::get_singleton()->free_rid(p_shadow->static_cube);
 		p_shadow->static_cube = RID();
 	}
 	p_shadow->cached_static_version = UINT64_MAX;
+	return freed;
 }
 
 void LightStorage::shadow_atlas_update(RID p_atlas) {
