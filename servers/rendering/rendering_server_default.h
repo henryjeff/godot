@@ -231,7 +231,11 @@ public:
 	virtual void texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer) override {
 		WRITE_ACTION
 		if (ASYNC_COND_PUSH) {
-			command_queue.push(server_name, &ServerName::texture_2d_update, p_texture, p_image.is_valid() ? p_image->duplicate() : p_image, p_layer);
+			Ref<Image> queued = p_image;
+			if (p_image.is_valid()) {
+				queued = p_image->duplicate();
+			}
+			command_queue.push(server_name, &ServerName::texture_2d_update, p_texture, queued, p_layer);
 		} else {
 			command_queue.flush_if_pending();
 			server_name->texture_2d_update(p_texture, p_image, p_layer);
