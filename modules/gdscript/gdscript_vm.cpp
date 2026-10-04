@@ -509,11 +509,24 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 	// small per-call cost to the *profiling* build only -- relative rankings stay
 	// valid; absolute GDScript dispatch time is inflated vs. a clean build. If
 	// that skew ever matters, switch Text() to a no-alloc owner instance id.
-	if (p_instance != nullptr) {
+	// fridge perf: only with a profiler attached, and the UTF-8 name comes from a per-thread cache keyed
+	// by the name's interned pointer (a freed-then-reused name can show a stale label; nothing is read).
+	if (p_instance != nullptr && TracyIsConnected) {
 		Node *__godot_owner_node = Object::cast_to<Node>(p_instance->owner);
 		if (__godot_owner_node != nullptr) {
-			const CharString __godot_owner_name = String(__godot_owner_node->get_name()).utf8();
-			__godot_tracy_script.Text(__godot_owner_name.get_data(), __godot_owner_name.length());
+			struct OwnerNameCache {
+				const void *key = nullptr;
+				CharString utf8;
+			};
+			static thread_local OwnerNameCache __godot_owner_names[256];
+			const StringName &__godot_name = __godot_owner_node->get_name();
+			const void *__godot_key = __godot_name.data_unique_pointer();
+			OwnerNameCache &__godot_entry = __godot_owner_names[(uintptr_t(__godot_key) >> 4) & 255];
+			if (__godot_entry.key != __godot_key) {
+				__godot_entry.key = __godot_key;
+				__godot_entry.utf8 = String(__godot_name).utf8();
+			}
+			__godot_tracy_script.Text(__godot_entry.utf8.get_data(), __godot_entry.utf8.length());
 		}
 	}
 #endif

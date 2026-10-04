@@ -89,6 +89,10 @@ class RenderingServerDefault : public RenderingServer {
 	void _thread_loop();
 
 	void _draw(bool p_swap_buffers, double frame_step);
+	// fridge: tick/pre_draw run MultiMesh interpolation, which uploads through RenderingDevice
+	// (render thread only). Threaded, they are queued; pre_draw carries the main thread's fraction.
+	void _tick();
+	void _pre_draw(bool p_will_draw, float p_fraction);
 	void _run_post_draw_steps();
 	void _init();
 	void _finish();

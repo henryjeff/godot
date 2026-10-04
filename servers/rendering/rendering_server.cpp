@@ -29,6 +29,10 @@
 /**************************************************************************/
 
 #include "rendering_server.h"
+
+#ifdef DLSS_ENABLED
+#include "servers/rendering/renderer_rd/effects/dlss.h"
+#endif
 #include "rendering_server.compat.inc"
 
 #include "core/config/project_settings.h"
@@ -2249,7 +2253,61 @@ void RenderingServer::get_argument_options(const StringName &p_function, int p_i
 }
 #endif
 
+// fridge perf: the per-pass GPU/CPU frame profile (the editor's visual profiler data) for game-side capture
+// probes. Static so no header changes: the capture reads it after its traced window.
+static TypedArray<Dictionary> _fridge_frame_profile_areas() {
+	TypedArray<Dictionary> out;
+	for (const RenderingServerTypes::FrameProfileArea &a : RenderingServer::get_singleton()->get_frame_profile()) {
+		Dictionary d;
+		d["name"] = a.name;
+		d["gpu_msec"] = a.gpu_msec;
+		d["cpu_msec"] = a.cpu_msec;
+		out.push_back(d);
+	}
+	return out;
+}
+
+static void _fridge_set_frame_profiling(bool p_enable) {
+	RenderingServer::get_singleton()->set_frame_profiling_enabled(p_enable);
+}
+
+// fridge: capability flag. VisualInstance3D's reset hook teleports hidden instances too, so game code can
+// drop its GDScript subtree walk (core/physics/fti.gd) on an engine that answers true.
+static bool _fridge_ungated_teleport() {
+	return true;
+}
+
+// fridge prototype: DLSS. `fridge_dlss_supported` is the capability probe (false on an engine
+// built without the SDK, or on hardware NGX refuses); the preset is an NGX render-preset value.
+static bool _fridge_dlss_supported() {
+#ifdef DLSS_ENABLED
+	return RendererRD::DLSSEffect::is_supported();
+#else
+	return false;
+#endif
+}
+
+static void _fridge_dlss_set_preset(int p_preset) {
+#ifdef DLSS_ENABLED
+	RendererRD::DLSSEffect::set_preset(p_preset);
+#endif
+}
+
+static int _fridge_dlss_get_preset() {
+#ifdef DLSS_ENABLED
+	return RendererRD::DLSSEffect::get_preset();
+#else
+	return 0;
+#endif
+}
+
 void RenderingServer::_bind_methods() {
+	ClassDB::bind_static_method("RenderingServer", D_METHOD("fridge_dlss_supported"), &_fridge_dlss_supported);
+	ClassDB::bind_static_method("RenderingServer", D_METHOD("fridge_dlss_set_preset", "preset"), &_fridge_dlss_set_preset);
+	ClassDB::bind_static_method("RenderingServer", D_METHOD("fridge_dlss_get_preset"), &_fridge_dlss_get_preset);
+	ClassDB::bind_static_method("RenderingServer", D_METHOD("fridge_frame_profile"), &_fridge_frame_profile_areas);
+	ClassDB::bind_static_method("RenderingServer", D_METHOD("fridge_set_frame_profiling", "enable"), &_fridge_set_frame_profiling);
+	ClassDB::bind_static_method("RenderingServer", D_METHOD("fridge_ungated_teleport"), &_fridge_ungated_teleport);
 	BIND_CONSTANT(RSE::NO_INDEX_ARRAY);
 	BIND_CONSTANT(RSE::ARRAY_WEIGHTS_SIZE);
 	BIND_CONSTANT(RSE::CANVAS_ITEM_Z_MIN);
@@ -2933,6 +2991,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_FSR2);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_DLSS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_NEAREST);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_MAX);
 

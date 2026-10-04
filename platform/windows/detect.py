@@ -483,6 +483,16 @@ def configure_msvc(env: "SConsEnvironment"):
         if not env["use_volk"]:
             LIBS += ["vulkan"]
 
+        # Fridge fork prototype: NVIDIA DLSS (NGX), only when the SDK is vendored.
+        dlss_dir = methods.base_folder / "thirdparty" / "dlss"
+        if env["arch"] == "x86_64" and (dlss_dir / "include" / "nvsdk_ngx.h").is_file():
+            env.AppendUnique(CPPDEFINES=["DLSS_ENABLED"])
+            env.Prepend(CPPPATH=["#thirdparty/dlss/include"])
+            env.Append(LIBPATH=["#thirdparty/dlss/lib/Windows_x86_64/x64"])
+            # /MT builds take the static-CRT flavour, /MD the dynamic one.
+            LIBS += ["nvsdk_ngx_s" if env["use_static_cpp"] else "nvsdk_ngx_d"]
+            print("DLSS: SDK found, building with DLSS_ENABLED.")
+
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])
 

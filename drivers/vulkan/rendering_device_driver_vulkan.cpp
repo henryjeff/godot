@@ -667,6 +667,12 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 
 	_register_requested_device_extension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
 
+	// Fridge fork prototype: what NVIDIA NGX (DLSS) needs on the device. Optional,
+	// so other vendors are unaffected. Mirrors DLSSEffect::get_required_device_extensions.
+	_register_requested_device_extension("VK_NVX_binary_import", false);
+	_register_requested_device_extension("VK_NVX_image_view_handle", false);
+	_register_requested_device_extension("VK_KHR_push_descriptor", false);
+
 	uint32_t device_extension_count = 0;
 	VkResult err = vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &device_extension_count, nullptr);
 	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't get Vulkan device extension count (VkResult error %d).", err));

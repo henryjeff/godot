@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/profiling/profiling.h"
 #include "material.h"
 
 #include "core/config/engine.h"
@@ -2146,6 +2147,7 @@ void BaseMaterial3D::_check_material_rid() {
 }
 
 void BaseMaterial3D::flush_changes() {
+	GodotProfileZone("BaseMaterial3D::flush_changes");
 	SelfList<BaseMaterial3D>::List copy;
 	{
 		MutexLock lock(material_mutex);

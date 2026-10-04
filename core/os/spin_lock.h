@@ -101,17 +101,16 @@ class SpinLock {
 		char aligner[Thread::CACHE_LINE_BYTES];
 	};
 
+	// fridge perf: the contended path, out of line: spins briefly, then yields (see spin_lock.cpp).
+	void _lock_contended() const;
+
 public:
 	_ALWAYS_INLINE_ void lock() const {
-		while (true) {
-			bool expected = false;
-			if (locked.compare_exchange_weak(expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
-				break;
-			}
-			do {
-				_cpu_pause();
-			} while (locked.load(std::memory_order_relaxed));
+		bool expected = false;
+		if (likely(locked.compare_exchange_weak(expected, true, std::memory_order_acquire, std::memory_order_relaxed))) {
+			return;
 		}
+		_lock_contended();
 	}
 
 	_ALWAYS_INLINE_ void unlock() const {

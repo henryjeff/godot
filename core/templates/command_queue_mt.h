@@ -33,6 +33,7 @@
 #include "core/object/worker_thread_pool.h"
 #include "core/os/condition_variable.h"
 #include "core/os/mutex.h"
+#include "core/profiling/profiling.h"
 #include "core/templates/local_vector.h"
 #include "core/templates/tuple.h"
 #include "core/typedefs.h"
@@ -157,6 +158,7 @@ class CommandQueueMT {
 	}
 
 	void _flush() {
+		GodotProfileZone("CommandQueueMT flush"); // fridge perf: the queued commands this thread executes
 		// Safeguard against trying to re-lock the binary mutex.
 		if (flushing) {
 			return;
@@ -213,6 +215,7 @@ class CommandQueueMT {
 	}
 
 	_FORCE_INLINE_ void _wait_for_sync(MutexLock<BinaryMutex> &p_lock) {
+		GodotProfileZone("CommandQueueMT sync wait"); // fridge perf: a caller blocked on the server thread
 		sync_awaiters++;
 		uint32_t sync_head_goal = sync_tail;
 		do {

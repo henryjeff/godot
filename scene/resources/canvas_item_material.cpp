@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/profiling/profiling.h"
 #include "canvas_item_material.h"
 
 #include "core/object/callable_mp.h"
@@ -151,6 +152,7 @@ void CanvasItemMaterial::_update_shader() {
 }
 
 void CanvasItemMaterial::flush_changes() {
+	GodotProfileZone("CanvasItemMaterial::flush_changes");
 	MutexLock lock(material_mutex);
 
 	while (dirty_materials.first()) {

@@ -3275,7 +3275,12 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 	float z_near = cull_data.camera_matrix->get_z_near();
 	bool is_orthogonal = cull_data.camera_matrix->is_orthogonal();
 
+	// fridge perf: 256-instance chunk zones, so a stalled cull slice names where it stalled (tooling/perf).
+	GodotProfileZoneGroupedFirst(cullchunk, "cull chunk");
 	for (uint64_t i = p_from; i < p_to; i++) {
+		if (((i - p_from) & 255) == 255) {
+			GodotProfileZoneGrouped(cullchunk, "cull chunk");
+		}
 		bool mesh_visible = false;
 
 		InstanceData &idata = cull_data.scenario->instance_data[i];
@@ -3360,6 +3365,7 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 							//but if nothing is going on, don't do it.
 							keep = false;
 						} else {
+							GodotProfileZone("cull particles");
 							cull_data.cull->lock.lock();
 							RSG::particles_storage->particles_request_process(idata.base_rid);
 							cull_data.cull->lock.unlock();
@@ -3381,6 +3387,7 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 					}
 
 					if (geometry_instance_pair_mask & (1 << RSE::INSTANCE_LIGHT) && (idata.flags & InstanceData::FLAG_GEOM_LIGHTING_DIRTY)) {
+						GodotProfileZone("cull light pairing");
 						InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(idata.instance->base_data);
 						ERR_FAIL_NULL(geom->geometry_instance);
 						// Clear any existing light instances for this mesh and find the max count per-mesh, and total (per-scene).
@@ -3520,6 +3527,7 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 						InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(idata.instance->base_data);
 
 						ERR_FAIL_NULL(geom->geometry_instance);
+						GodotProfileZone("cull softshadow pairing");
 						cull_data.cull->lock.lock();
 						geom->geometry_instance->set_softshadow_projector_pairing(geom->softshadow_count > 0, geom->projector_count > 0);
 						cull_data.cull->lock.unlock();

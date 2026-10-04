@@ -153,6 +153,10 @@ if env.dev_build:
 if env.editor_build:
     env_jolt.Append(CPPDEFINES=["JPH_DEBUG_RENDERER"])
 
+# fridge perf: Jolt's JPH_PROFILE scopes become Tracy zones (jolt_tracy_profile.cpp), job threads included.
+if env["profiler"] == "tracy":
+    env_jolt.Append(CPPDEFINES=["JPH_EXTERNAL_PROFILE"])
+
 if env["precision"] == "double":
     env_jolt.Append(CPPDEFINES=["JPH_DOUBLE_PRECISION"])
 

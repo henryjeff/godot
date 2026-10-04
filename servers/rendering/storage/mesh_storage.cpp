@@ -32,6 +32,7 @@
 
 #include "core/config/engine.h"
 #include "core/math/transform_interpolator.h"
+#include "core/profiling/profiling.h"
 
 RID RendererMeshStorage::multimesh_allocate() {
 	return _multimesh_allocate();
@@ -369,6 +370,7 @@ void RendererMeshStorage::InterpolationData::notify_free_multimesh(RID p_rid) {
 }
 
 void RendererMeshStorage::update_interpolation_tick(bool p_process) {
+	GodotProfileZone("MultiMesh interp tick");
 	// Detect any that were on the previous transform list that are no longer active,
 	// we should remove them from the interpolate list.
 
@@ -427,9 +429,35 @@ void RendererMeshStorage::update_interpolation_tick(bool p_process) {
 }
 
 void RendererMeshStorage::update_interpolation_frame(bool p_process) {
+#if defined(GODOT_USE_TRACY)
+	// fridge perf: which interpolated MultiMeshes this frame costs, by instance count.
+	ZoneNamedN(__mm_zone, "MultiMesh interp frame", true);
+	{
+		int64_t total = 0, biggest = 0;
+		uint64_t biggest_rid = 0;
+		for (unsigned int c = 0; c < _interpolation_data.multimesh_interpolate_update_list.size(); c++) {
+			const RID &r = _interpolation_data.multimesh_interpolate_update_list[c];
+			MultiMeshInterpolator *m = _multimesh_get_interpolator(r);
+			if (m && m->_stride) {
+				int64_t inst = m->_data_curr.size() / m->_stride;
+				total += inst;
+				if (inst > biggest) {
+					biggest = inst;
+					biggest_rid = r.get_id();
+				}
+			}
+		}
+		char buf[160];
+		int len = snprintf(buf, sizeof(buf), "mm=%d inst=%lld biggest=%lld rid=%llu",
+				(int)_interpolation_data.multimesh_interpolate_update_list.size(), (long long)total,
+				(long long)biggest, (unsigned long long)biggest_rid);
+		ZoneTextV(__mm_zone, buf, len);
+	}
+#endif
 	if (p_process) {
 		// Only need 32 bits for interpolation, don't use real_t.
-		float f = Engine::get_singleton()->get_physics_interpolation_fraction();
+		float f = _interpolation_data.frame_fraction >= 0.0f ? _interpolation_data.frame_fraction
+															  : Engine::get_singleton()->get_physics_interpolation_fraction();
 
 		for (unsigned int c = 0; c < _interpolation_data.multimesh_interpolate_update_list.size(); c++) {
 			const RID &rid = _interpolation_data.multimesh_interpolate_update_list[c];

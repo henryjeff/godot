@@ -11,6 +11,14 @@ env_effects = env.Clone()
 if env["metal"]:
     env_effects.Prepend(CPPPATH=["#thirdparty/metal-cpp"])
 
+# Fridge fork prototype: dlss.cpp talks to Vulkan directly, like the Vulkan driver does.
+if "DLSS_ENABLED" in env["CPPDEFINES"]:
+    env_effects.Prepend(CPPPATH=["#thirdparty/vulkan", "#thirdparty/vulkan/include"])
+    env_effects.AppendUnique(CPPDEFINES=["VK_USE_PLATFORM_WIN32_KHR"])
+    if env["use_volk"]:
+        env_effects.AppendUnique(CPPDEFINES=["USE_VOLK"])
+        env_effects.Prepend(CPPPATH=["#thirdparty/volk"])
+
 # Thirdparty source files
 
 thirdparty_obj = []

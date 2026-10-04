@@ -30,6 +30,7 @@
 
 #include "rendering_server_default.h"
 
+#include "core/config/engine.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
@@ -160,6 +161,14 @@ void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
 		}
 
 		frame_profile = new_profile;
+#if defined(GODOT_USE_TRACY)
+		// fridge perf: the frame's GPU span (first to last captured timestamp) as a Tracy plot, so a capture
+		// carries GPU time per frame with no main-thread readback (tooling/perf reads it with csvexport -p).
+		const uint32_t ts_count = RSG::utilities->get_captured_timestamps_count();
+		if (ts_count > 1) {
+			TracyPlot("GPU frame ms", double((RSG::utilities->get_captured_timestamp_gpu_time(ts_count - 1) - base_gpu) / 1000) / 1000.0);
+		}
+#endif
 	}
 
 	frame_profile_frame = RSG::utilities->get_captured_timestamps_frame();
@@ -457,13 +466,35 @@ void RenderingServerDefault::draw(bool p_present, double frame_step) {
 	}
 }
 
-void RenderingServerDefault::tick() {
+void RenderingServerDefault::_tick() {
 	RSG::canvas->tick();
 	RSG::scene->tick();
 }
 
-void RenderingServerDefault::pre_draw(bool p_will_draw) {
+void RenderingServerDefault::tick() {
+	GodotProfileZone("RenderingServer::tick");
+	if (create_thread) {
+		command_queue.push(this, &RenderingServerDefault::_tick);
+	} else {
+		_tick();
+	}
+}
+
+void RenderingServerDefault::_pre_draw(bool p_will_draw, float p_fraction) {
+	RSG::mesh_storage->_interpolation_data.frame_fraction = p_fraction;
 	RSG::scene->pre_draw(p_will_draw);
+	RSG::mesh_storage->_interpolation_data.frame_fraction = -1.0f;
+}
+
+void RenderingServerDefault::pre_draw(bool p_will_draw) {
+	GodotProfileZone("RenderingServer::pre_draw");
+	if (create_thread) {
+		// The render thread runs this after the main thread has moved on: hand it this frame's fraction.
+		command_queue.push(this, &RenderingServerDefault::_pre_draw, p_will_draw,
+				(float)Engine::get_singleton()->get_physics_interpolation_fraction());
+	} else {
+		RSG::scene->pre_draw(p_will_draw);
+	}
 }
 
 void RenderingServerDefault::_call_on_render_thread(const Callable &p_callable) {

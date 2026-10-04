@@ -112,18 +112,43 @@ const StringInternData *_intern_name(const StringName &p_name) {
 	return _data;
 }
 
+// fridge perf: every GDScript call and script->native call interns its location, so a global mutex
+// here serialized all script threads (23 workers: 47x slower per call, tests/test_gdscript_call_bench.gd).
+// Interned locations live until godot_cleanup_profiler, so a per-thread cache of the result is safe.
+struct SourceLocationThreadCache {
+	const void *function_ptr = nullptr;
+	const void *file = nullptr;
+	const void *function = nullptr;
+	const void *name = nullptr;
+	uint32_t line = 0;
+	const tracy::SourceLocationData *location = nullptr;
+};
+static thread_local SourceLocationThreadCache source_location_thread_cache[1024];
+
 const tracy::SourceLocationData *intern_source_location(const void *p_function_ptr, const StringName &p_file, const StringName &p_function, const StringName &p_name, uint32_t p_line, bool p_is_script) {
 	ERR_FAIL_COND_V(!configured, &dummy_source_location);
 
 	const uint32_t hash = HashMapHasherDefault::hash(p_function_ptr);
 	const uint32_t idx = hash & TracyInternTable::TABLE_MASK;
 
+	SourceLocationThreadCache &cached = source_location_thread_cache[(hash ^ (p_line * 2654435761u)) & 1023];
+	if (cached.location && cached.function_ptr == p_function_ptr && cached.line == p_line && cached.file == p_file.data_unique_pointer() && cached.function == p_function.data_unique_pointer() && cached.name == p_name.data_unique_pointer()) {
+		return cached.location;
+	}
+	cached.function_ptr = p_function_ptr;
+	cached.file = p_file.data_unique_pointer();
+	cached.function = p_function.data_unique_pointer();
+	cached.name = p_name.data_unique_pointer();
+	cached.line = p_line;
+	cached.location = nullptr;
+
 	MutexLock lock(TracyInternTable::mutex);
 	SourceLocationInternData *_data = TracyInternTable::source_location_table[idx];
 
 	while (_data) {
 		if (_data->function_ptr_hash == hash && _data->source_location_data.line == p_line && _data->file->name == p_file && _data->function->name == p_function && _data->name->name == p_name) {
-			return &_data->source_location_data;
+			cached.location = &_data->source_location_data;
+			return cached.location;
 		}
 		_data = _data->next;
 	}
@@ -150,7 +175,8 @@ const tracy::SourceLocationData *intern_source_location(const void *p_function_p
 	}
 	TracyInternTable::source_location_table[idx] = _data;
 
-	return &_data->source_location_data;
+	cached.location = &_data->source_location_data;
+	return cached.location;
 }
 } // namespace tracy
 

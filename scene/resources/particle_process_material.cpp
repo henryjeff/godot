@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/profiling/profiling.h"
 #include "particle_process_material.h"
 
 #include "core/config/engine.h"
@@ -1384,6 +1385,7 @@ void ParticleProcessMaterial::_update_shader() {
 }
 
 void ParticleProcessMaterial::flush_changes() {
+	GodotProfileZone("ParticleProcessMaterial::flush_changes");
 	MutexLock lock(dirty_materials_mutex);
 
 	while (dirty_materials.first()) {

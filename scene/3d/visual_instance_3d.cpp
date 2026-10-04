@@ -103,10 +103,11 @@ void VisualInstance3D::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_RESET_PHYSICS_INTERPOLATION: {
-			if (_is_vi_visible() && is_inside_tree()) {
-				// Allow resetting motion vectors etc
-				// at the same time as resetting physics interpolation,
-				// giving users one common interface.
+			// Allow resetting motion vectors etc at the same time as resetting physics interpolation,
+			// giving users one common interface. fridge: HIDDEN instances too - a pooled node declared
+			// while hidden otherwise keeps its stale previous transform and draws garbage motion vectors
+			// the frame it is revealed (game code walked every subtree in GDScript to cover this).
+			if (is_inside_tree()) {
 				RenderingServer::get_singleton()->instance_teleport(instance);
 			}
 		} break;

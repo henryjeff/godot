@@ -30,6 +30,7 @@
 
 #ifndef _3D_DISABLED
 
+#include "core/profiling/profiling.h"
 #include "scene_tree_fti.h"
 
 #include "core/config/engine.h"
@@ -109,6 +110,7 @@ void SceneTreeFTI::set_enabled(Node *p_root, bool p_enabled) {
 }
 
 void SceneTreeFTI::tick_update() {
+	GodotProfileZone("SceneTreeFTI::tick_update");
 	if (!data.enabled) {
 		return;
 	}
@@ -603,6 +605,7 @@ void SceneTreeFTI::_update_dirty_nodes(Node *p_node, uint32_t p_current_half_fra
 }
 
 void SceneTreeFTI::frame_update(Node *p_root, bool p_frame_start) {
+	GodotProfileZone("SceneTreeFTI::frame_update");
 	if (!data.enabled || !p_root) {
 		return;
 	}

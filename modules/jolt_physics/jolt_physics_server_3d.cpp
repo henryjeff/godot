@@ -53,6 +53,8 @@
 #include "spaces/jolt_space_3d.h"
 #include "spaces/jolt_temp_allocator.h"
 
+#include "core/profiling/profiling.h"
+
 JoltPhysicsServer3D::JoltPhysicsServer3D(bool p_on_separate_thread) :
 		on_separate_thread(p_on_separate_thread) {
 	singleton = this;
@@ -1646,6 +1648,7 @@ void JoltPhysicsServer3D::step(real_t p_step) {
 	}
 
 	for (JoltSpace3D *active_space : active_spaces) {
+		GodotProfileZone("Jolt space step"); // fridge perf: one per active space (every World3D whose space was touched)
 		job_system->pre_step();
 
 		active_space->step((float)p_step);
@@ -1663,6 +1666,7 @@ void JoltPhysicsServer3D::end_sync() {
 }
 
 void JoltPhysicsServer3D::flush_queries() {
+	GodotProfileZone("Jolt flush_queries");
 	if (!active) {
 		return;
 	}

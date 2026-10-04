@@ -234,6 +234,7 @@ public:
 		LocalVector<RID> multimesh_transform_update_lists[2];
 		LocalVector<RID> *multimesh_transform_update_list_curr = &multimesh_transform_update_lists[0];
 		LocalVector<RID> *multimesh_transform_update_list_prev = &multimesh_transform_update_lists[1];
+		float frame_fraction = -1.0f; // fridge: >= 0 = the fraction pre_draw was queued with (threaded)
 	} _interpolation_data;
 
 	void update_interpolation_tick(bool p_process = true);

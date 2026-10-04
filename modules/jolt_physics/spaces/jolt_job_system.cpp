@@ -95,7 +95,17 @@ JoltJobSystem::Job *JoltJobSystem::Job::pop_completed() {
 	return prev_head;
 }
 
+// fridge perf experiment: FRIDGE_JOLT_SINGLE=1 runs every job on the stepping thread (the barrier's own
+// Wait executes queued jobs), so no job is handed to WorkerThreadPool.
+static bool _jolt_single_threaded() {
+	static const bool single = OS::get_singleton()->get_environment("FRIDGE_JOLT_SINGLE") == "1";
+	return single;
+}
+
 void JoltJobSystem::Job::queue() {
+	if (_jolt_single_threaded()) {
+		return;
+	}
 	AddRef();
 
 	// Ideally we would use Jolt's actual job name here, but I'd rather not incur the overhead of a memory allocation or
@@ -159,7 +169,7 @@ void JoltJobSystem::_reclaim_jobs() {
 
 JoltJobSystem::JoltJobSystem() :
 		JPH::JobSystemWithBarrier(JPH::cMaxPhysicsBarriers),
-		thread_count(MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())) {
+		thread_count(_jolt_single_threaded() ? 1 : MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())) {
 	jobs.Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsJobs);
 }
 

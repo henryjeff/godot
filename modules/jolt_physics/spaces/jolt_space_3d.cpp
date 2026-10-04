@@ -44,6 +44,7 @@
 
 #include "core/io/file_access.h"
 #include "core/os/time.h"
+#include "core/profiling/profiling.h"
 #include "core/string/print_string.h"
 #include "core/variant/variant_utility.h"
 
@@ -64,7 +65,10 @@ constexpr double SPACE_DEFAULT_SOLVER_ITERATIONS = 8;
 } // namespace
 
 void JoltSpace3D::_pre_step(float p_step) {
-	flush_pending_objects();
+	{
+		GodotProfileZone("Jolt flush_pending_objects");
+		flush_pending_objects();
+	}
 
 	while (needs_optimization_list.first()) {
 		JoltShapedObject3D *object = needs_optimization_list.first()->self();
@@ -191,9 +195,16 @@ void JoltSpace3D::step(float p_step) {
 	stepping = true;
 	last_step = p_step;
 
-	_pre_step(p_step);
+	{
+		GodotProfileZone("Jolt pre_step");
+		_pre_step(p_step);
+	}
 
-	const JPH::EPhysicsUpdateError update_error = physics_system->Update(p_step, 1, temp_allocator, job_system);
+	JPH::EPhysicsUpdateError update_error;
+	{
+		GodotProfileZone("Jolt Update");
+		update_error = physics_system->Update(p_step, 1, temp_allocator, job_system);
+	}
 
 	if ((update_error & JPH::EPhysicsUpdateError::ManifoldCacheFull) != JPH::EPhysicsUpdateError::None) {
 		WARN_PRINT_ONCE(vformat("Jolt Physics manifold cache exceeded capacity and contacts were ignored. "
@@ -216,7 +227,10 @@ void JoltSpace3D::step(float p_step) {
 				JoltProjectSettings::max_contact_constraints));
 	}
 
-	_post_step(p_step);
+	{
+		GodotProfileZone("Jolt post_step");
+		_post_step(p_step);
+	}
 
 	stepping = false;
 }

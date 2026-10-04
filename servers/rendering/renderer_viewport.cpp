@@ -45,6 +45,10 @@
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/texture_storage.h"
 
+#ifdef DLSS_ENABLED
+#include "servers/rendering/renderer_rd/effects/dlss.h"
+#endif
+
 #ifndef XR_DISABLED
 #include "servers/xr/xr_interface.h"
 #include "servers/xr/xr_server.h"
@@ -178,6 +182,37 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
 			}
 
+#ifdef DLSS_ENABLED
+			{
+				// Fridge fork prototype: FRIDGE_DLSS=1 swaps every FSR2 viewport to DLSS,
+				// so the unmodified game can be A/B'd from the launch environment.
+				static const bool force_dlss = OS::get_singleton()->get_environment("FRIDGE_DLSS") == "1";
+				// FRIDGE_SCALE=<0.33..1> overrides the render scale of those same viewports.
+				static const float force_scale = OS::get_singleton()->get_environment("FRIDGE_SCALE").to_float();
+				if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR2) {
+					if (force_scale >= 0.3f && force_scale <= 1.0f) {
+						scaling_3d_scale = force_scale;
+					}
+					if (force_dlss) {
+						scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_DLSS;
+					}
+				}
+			}
+#endif
+
+			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS) {
+				// Fridge fork prototype: DLSS needs Forward+ on Vulkan with NGX up.
+				bool dlss_ok = false;
+#ifdef DLSS_ENABLED
+				dlss_ok = OS::get_singleton()->get_current_rendering_method() == "forward_plus" && RendererRD::DLSSEffect::is_available();
+#endif
+				if (!dlss_ok) {
+					scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_FSR2;
+					scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
+					WARN_PRINT_ONCE("DLSS is not available. Falling back to FSR 2 scaling.");
+				}
+			}
+
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL && !RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_SPATIAL)) {
 				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_FSR;
 				WARN_PRINT_ONCE("MetalFX spatial upscaling is not supported by the current renderer or hardware. Falling back to FSR scaling.");
@@ -196,6 +231,11 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 					WARN_PRINT_ONCE("MetalFX temporal upscaling does not support 3D MSAA. Disabling 3D MSAA internally.");
 					msaa_3d = RSE::VIEWPORT_MSAA_DISABLED;
 				}
+			}
+
+			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS && msaa_3d != RSE::VIEWPORT_MSAA_DISABLED) {
+				WARN_PRINT_ONCE("DLSS does not support 3D MSAA. Disabling 3D MSAA internally.");
+				msaa_3d = RSE::VIEWPORT_MSAA_DISABLED;
 			}
 
 			bool scaling_3d_is_not_bilinear = scaling_3d_mode != RSE::VIEWPORT_SCALING_3D_MODE_OFF && scaling_3d_mode != RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
@@ -241,6 +281,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 					break;
 				case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL:
 				case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
+				case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
 				case RSE::VIEWPORT_SCALING_3D_MODE_FSR:
 				case RSE::VIEWPORT_SCALING_3D_MODE_FSR2:
 					target_width = p_viewport->size.width;
